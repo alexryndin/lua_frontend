@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.2.0 — 2026-10-07
+
+- removed the on-disk compiled-profile cache entirely: realistic profiles
+  parse in under a millisecond, so the `LUAFRONT_CACHE_DIR` /
+  `LUAFRONT_NO_CACHE` / `LUAFRONT_CACHE_TRACE` controls and the cache-format
+  machinery are gone; external profiles are parsed on every use;
+- removed the `luax` development runner and the `luafront` inspection tool;
+  their scenarios are covered by `lua` itself (`--native`, `--syntax`,
+  compile-only via `-e 'assert(loadfile(...))'`);
+- moved the embedding examples into `README.md` snippets; the public-API
+  gate compiles the same code inline with `-Werror`;
+- `tests/matrix.lua` repaired to be compile-valid (it relied on the removed
+  AST-dump mode).
+
 ## 1.1.0 — 2026-10-07
 
 - moved comments out of the hardcoded lexer into the syntax profile:

@@ -133,34 +133,11 @@ the language.
 explicit `--syntax`, project `.lua-syntax`, system profile, or builtin profile
 can still be used.
 
-## Compiled profile cache
+## Profile loading
 
-External syntax files are compiled to grammar IR and cached automatically.
-The default cache directory is:
-
-```text
-$XDG_CACHE_HOME/luafront/profiles
-```
-
-or, when `XDG_CACHE_HOME` is unset:
-
-```text
-$HOME/.cache/luafront/profiles
-```
-
-Controls:
-
-```text
-LUAFRONT_CACHE_DIR=/path    override the cache directory
-LUAFRONT_NO_CACHE=1         disable profile caching
-LUAFRONT_CACHE_TRACE=1      print cache hit/miss/store diagnostics
-```
-
-The cache is only an optimization.  Every cache entry contains the exact
-profile source bytes and a versioned grammar IR.  Source bytes are compared
-before an entry is accepted, and the reconstructed IR is validated again.
-Corrupt/stale entries are ignored and rebuilt.  A cache hash collision cannot
-select a grammar for different source text.
+External syntax files are parsed into grammar IR on every use.  Realistic
+profiles are a few kilobytes and parse in well under a millisecond, so there
+is deliberately no on-disk compiled-profile cache.
 
 ## Syntax profile
 
@@ -203,7 +180,7 @@ See [docs/PROFILE_FORMAT.md](docs/PROFILE_FORMAT.md).
 syntax profile
      |
      v
-profile parser -> grammar IR -> validator -> compiled-profile cache
+profile parser -> grammar IR -> validator
                                       |
 source -> configurable lexer -> generic parser
                                       |
@@ -238,23 +215,13 @@ per-state source-compiler hook.  See
 
 ## Tools
 
-`lua` is the finished interpreter.
-
-`luafront` is an AST/compiler-boundary inspection tool:
-
-```sh
-./luafront --check-profile profiles/lua55.syntax
-./luafront --syntax profiles/jslike.syntax tests/jslike.lua
-./luafront --tokens --syntax profiles/lua55.syntax tests/standard.lua
-```
-
-`luax` is a small non-interactive development runner retained for differential
-and compiler tests:
+`lua` is the interpreter.  Compile-only checking is plain `loadfile`
+(the hook applies to it like to any other text chunk):
 
 ```sh
-./luax --native file.lua
-./luax --syntax profiles/lua55.syntax file.lua
-./luax --check --syntax profiles/lua55.syntax file.lua
+./lua --native file.lua
+./lua --syntax profiles/lua55.syntax file.lua
+./lua --syntax profiles/jslike.syntax -e 'assert(loadfile("file.lx"));'
 ```
 
 ## Library APIs
@@ -273,7 +240,81 @@ include/luafront.h
 include/luafront_lua.h
 ```
 
-Small embedding examples are in `examples/parse.c` and `examples/embed.c`.
+Minimal embedding examples:
+
+```c
+/* parse — load a profile and parse a chunk to a canonical AST
+   (compile: cc -Iinclude examples-native.c libluafront.a) */
+#include "luafront.h"
+
+#include <stdio.h>
+
+int main(void) {
+    static const char source[] = "return 40 + 2";
+    LF_Error err = {0};
+    LF_Profile *profile = lf_profile_builtin_lua55(&err);
+    if (profile == NULL) {
+        fprintf(stderr, "%s\n", err.message);
+        return 1;
+    }
+    LF_Ast *ast = lf_parse(profile, "=example", source,
+                           sizeof(source) - 1, &err);
+    if (ast == NULL) {
+        fprintf(stderr, "%s\n", err.message);
+        lf_profile_free(profile);
+        return 1;
+    }
+    printf("profile=%s version=%s root=%s\n",
+           lf_profile_name(profile),
+           lf_profile_version(profile) ? lf_profile_version(profile) : "-",
+           lf_ast_kind(ast));
+    lf_ast_free(ast);
+    lf_profile_free(profile);
+    return 0;
+}
+```
+
+```c
+/* embed — run a dialect chunk on a PUC Lua state with a profile installed
+   (compile: cc -Iinclude -I.. embed-native.c libluafront-lua.a -lm -ldl) */
+#include "luafront_lua.h"
+#include "lauxlib.h"
+#include "lualib.h"
+
+#include <stdio.h>
+#include <string.h>
+
+int main(int argc, char **argv) {
+    static const char source[] = "let answer = 40 + 2; return answer;";
+    LF_Error err = {0};
+    if (argc != 2) {
+        fprintf(stderr, "usage: %s PROFILE\n", argv[0]);
+        return 2;
+    }
+    LF_Profile *profile = lf_profile_load(argv[1], &err);
+    if (profile == NULL) {
+        fprintf(stderr, "%s\n", err.message);
+        return 1;
+    }
+    lua_State *L = luaL_newstate();
+    if (L == NULL) return 1;
+    luaL_openlibs(L);
+    lf_lua_install_profile(L, profile);
+    if (luaL_loadbuffer(L, source, sizeof(source) - 1, "=embedded") != LUA_OK ||
+        lua_pcall(L, 0, 1, 0) != LUA_OK) {
+        fprintf(stderr, "%s\n", lua_tostring(L, -1));
+        lf_lua_uninstall_profile(L);
+        lf_profile_free(profile);
+        lua_close(L);
+        return 1;
+    }
+    printf("%lld\n", (long long)lua_tointeger(L, -1));
+    lf_lua_uninstall_profile(L);
+    lf_profile_free(profile);
+    lua_close(L);
+    return 0;
+}
+```
 
 ## Install
 
@@ -325,7 +366,7 @@ On the available official Lua 5.5 corpus, all **35/35** `testes/*.lua` files:
 - produce **byte-for-byte identical stripped bytecode** in both paths.
 
 The regular test gate additionally covers the upstream CLI integration, REPL, profile search,
-profile cache corruption/recovery, binary-safe strings, all Lua short-string
+binary-safe strings, all Lua short-string
 escape forms, dynamic loading, binary chunks, public C APIs, and a
 deterministic generated Lua-vs-JS-like differential test over 180 expressions.
 

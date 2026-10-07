@@ -8,8 +8,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sys/types.h>
-#include <unistd.h>
 
 #define LF_INIT_CAP 16
 #define LF_MAX_RECURSION 8192
@@ -460,203 +458,20 @@ bad2: if(err && err->kind!=LF_ERROR_IO) err->kind=LF_ERROR_PROFILE; lf_profile_f
 }
 
 
-/* ---------- compiled profile cache ----------
+/* ---------- profile loading and discovery ----------
 **
-** External profiles are parsed into grammar IR once and serialized under the
-** user's cache directory.  The cache is an optimization only: every entry
-** embeds the exact source bytes and is validated before use, so corruption or
-** a hash collision can never select a profile for different source text.
+** External profiles are parsed on every use.  Realistic profiles are a few
+** kilobytes and parse in well under a millisecond, so no compiled-profile
+** cache is kept on disk.
 */
 
-#define LF_CACHE_FORMAT 2u
-#define LF_CACHE_MAX_FILE (64u * 1024u * 1024u)
-#define LF_CACHE_MAX_ITEMS (1024u * 1024u)
-static const unsigned char lf_cache_magic[8] = {'L','F','P','I','R','0','0','1'};
-
-typedef struct { unsigned char *v; size_t n, cap; int failed; } CacheBuf;
-typedef struct { const unsigned char *v; size_t n, i; int failed; } CacheRead;
-
-static void cb_reserve(CacheBuf *b, size_t add) {
-    if (b->failed || add > SIZE_MAX - b->n) { b->failed=1; return; }
-    size_t need=b->n+add;
-    if(need<=b->cap) return;
-    size_t nc=b->cap?b->cap:1024;
-    while(nc<need){if(nc>SIZE_MAX/2){nc=need;break;}nc*=2;}
-    b->v=(unsigned char*)xrealloc(b->v,nc);b->cap=nc;
-}
-static void cb_bytes(CacheBuf*b,const void*p,size_t n){cb_reserve(b,n);if(!b->failed){memcpy(b->v+b->n,p,n);b->n+=n;}}
-static void cb_u8(CacheBuf*b,unsigned v){unsigned char x=(unsigned char)v;cb_bytes(b,&x,1);}
-static void cb_u32(CacheBuf*b,uint32_t v){unsigned char x[4]={(unsigned char)v,(unsigned char)(v>>8),(unsigned char)(v>>16),(unsigned char)(v>>24)};cb_bytes(b,x,4);}
-static void cb_str(CacheBuf*b,const char*s){size_t n=strlen(s);if(n>UINT32_MAX){b->failed=1;return;}cb_u32(b,(uint32_t)n);cb_bytes(b,s,n);}
-
-static int cr_bytes(CacheRead*r,void*out,size_t n){if(r->failed||n>r->n-r->i){r->failed=1;return 0;}if(out)memcpy(out,r->v+r->i,n);r->i+=n;return 1;}
-static unsigned cr_u8(CacheRead*r){unsigned char x=0;(void)cr_bytes(r,&x,1);return x;}
-static uint32_t cr_u32(CacheRead*r){unsigned char x[4]={0};if(!cr_bytes(r,x,4))return 0;return (uint32_t)x[0]|((uint32_t)x[1]<<8)|((uint32_t)x[2]<<16)|((uint32_t)x[3]<<24);}
-static char *cr_str(CacheRead*r){uint32_t n=cr_u32(r);if(r->failed||n>LF_CACHE_MAX_FILE||n>r->n-r->i){r->failed=1;return NULL;}char*s=xstrndup((const char*)r->v+r->i,n);r->i+=n;return s;}
-
-static void cache_put_g(CacheBuf*b,const GExpr*g,unsigned depth){
-    if(!g||depth>LF_MAX_RECURSION){b->failed=1;return;}
-    cb_u8(b,(unsigned)g->kind);cb_u8(b,g->text!=NULL);
-    if(g->text)cb_str(b,g->text);
-    if(g->nitems>UINT32_MAX){b->failed=1;return;}cb_u32(b,(uint32_t)g->nitems);
-    for(size_t i=0;i<g->nitems;i++)cache_put_g(b,g->items[i],depth+1);
-}
-static GExpr *cache_get_g(CacheRead*r,unsigned depth){
-    if(depth>LF_MAX_RECURSION){r->failed=1;return NULL;}
-    unsigned k=cr_u8(r);unsigned hastext=cr_u8(r);if(r->failed||k>GX_CAPTURE){r->failed=1;return NULL;}
-    GExpr*g=gnew((GKind)k);if(hastext){g->text=cr_str(r);if(r->failed){gfree(g);return NULL;}}
-    uint32_t n=cr_u32(r);if(r->failed||n>LF_CACHE_MAX_ITEMS){gfree(g);r->failed=1;return NULL;}
-    if(((g->kind==GX_REF||g->kind==GX_LIT||g->kind==GX_CLASS||g->kind==GX_CAPTURE) && g->text==NULL) ||
-       ((g->kind==GX_REF||g->kind==GX_LIT||g->kind==GX_CLASS) && n!=0) ||
-       ((g->kind==GX_OPT||g->kind==GX_REP||g->kind==GX_CAPTURE) && n!=1)){
-        gfree(g);r->failed=1;return NULL;
-    }
-    for(uint32_t i=0;i<n;i++){GExpr*x=cache_get_g(r,depth+1);if(!x){gfree(g);return NULL;}gadd(g,x);}return g;
-}
-static void cache_put_a(CacheBuf*b,const AExpr*a,unsigned depth){
-    if(depth>LF_MAX_RECURSION){b->failed=1;return;}cb_u8(b,a!=NULL);if(!a)return;
-    cb_u8(b,(unsigned)a->kind);cb_u8(b,a->text!=NULL);if(a->text)cb_str(b,a->text);
-    if(a->nargs>UINT32_MAX){b->failed=1;return;}cb_u32(b,(uint32_t)a->nargs);
-    for(size_t i=0;i<a->nargs;i++)cache_put_a(b,a->args[i],depth+1);
-}
-static AExpr *cache_get_a(CacheRead*r,unsigned depth){
-    if(depth>LF_MAX_RECURSION){r->failed=1;return NULL;}if(!cr_u8(r))return r->failed?NULL:NULL;
-    unsigned k=cr_u8(r);unsigned hastext=cr_u8(r);if(r->failed||k>AX_NULL){r->failed=1;return NULL;}
-    AExpr*a=anew((AKind)k);if(hastext){a->text=cr_str(r);if(r->failed){afree(a);return NULL;}}
-    uint32_t n=cr_u32(r);if(r->failed||n>LF_CACHE_MAX_ITEMS){afree(a);r->failed=1;return NULL;}
-    if(((a->kind==AX_REF||a->kind==AX_STRING||a->kind==AX_CALL) && a->text==NULL) ||
-       ((a->kind==AX_REF||a->kind==AX_STRING||a->kind==AX_NULL) && n!=0)){
-        afree(a);r->failed=1;return NULL;
-    }
-    for(uint32_t i=0;i<n;i++){AExpr*x=cache_get_a(r,depth+1);if(!x){afree(a);return NULL;}aadd(a,x);}return a;
-}
-
-static int cache_serialize_profile(CacheBuf*b,const LF_Profile*p,const char*source,size_t source_len){
-    if(source_len>UINT32_MAX||p->nrules>UINT32_MAX||p->ncontextuals>UINT32_MAX)return 0;
-    if(p->nline_comments>UINT32_MAX||p->nblock_comments>UINT32_MAX||p->nlong_markers>UINT32_MAX)return 0;
-    cb_bytes(b,lf_cache_magic,sizeof(lf_cache_magic));cb_u32(b,LF_CACHE_FORMAT);
-    cb_u32(b,(uint32_t)source_len);cb_bytes(b,source,source_len);
-    cb_str(b,p->name?p->name:"");cb_u8(b,p->version!=NULL);if(p->version)cb_str(b,p->version);
-    cb_u32(b,(uint32_t)p->ncontextuals);for(size_t i=0;i<p->ncontextuals;i++)cb_str(b,p->contextuals[i]);
-    cb_u8(b,(unsigned char)(p->comments_explicit?1:0));
-    cb_u32(b,(uint32_t)p->nline_comments);for(size_t i=0;i<p->nline_comments;i++)cb_str(b,p->line_comments[i]);
-    cb_u32(b,(uint32_t)p->nblock_comments);for(size_t i=0;i<p->nblock_comments;i++){cb_str(b,p->block_comments[i].open);cb_str(b,p->block_comments[i].close);}
-    cb_u32(b,(uint32_t)p->nlong_markers);for(size_t i=0;i<p->nlong_markers;i++)cb_str(b,p->long_markers[i]);
-    cb_u32(b,(uint32_t)p->nrules);for(size_t i=0;i<p->nrules;i++){cb_str(b,p->rules[i].name);cache_put_g(b,p->rules[i].expr,0);cache_put_a(b,p->rules[i].action,0);}
-    return !b->failed;
-}
-static LF_Profile *cache_deserialize_profile(const unsigned char*data,size_t len,const char*source,size_t source_len,const char*path){
-    CacheRead r={data,len,0,0};unsigned char magic[sizeof(lf_cache_magic)];
-    if(!cr_bytes(&r,magic,sizeof(magic))||memcmp(magic,lf_cache_magic,sizeof(magic))!=0)return NULL;
-    if(cr_u32(&r)!=LF_CACHE_FORMAT||r.failed)return NULL;
-    uint32_t sn=cr_u32(&r);if(r.failed||sn!=source_len||sn>r.n-r.i||memcmp(r.v+r.i,source,sn)!=0)return NULL;r.i+=sn;
-    LF_Profile*p=(LF_Profile*)calloc(1,sizeof(*p));if(!p)abort();
-    p->name=cr_str(&r);if(r.failed)goto bad;
-    if(cr_u8(&r)){p->version=cr_str(&r);if(r.failed)goto bad;}
-    uint32_t nc=cr_u32(&r);if(r.failed||nc>LF_CACHE_MAX_ITEMS)goto bad;
-    for(uint32_t i=0;i<nc;i++){char*x=cr_str(&r);if(r.failed){free(x);goto bad;}add_contextual(p,x);free(x);}
-    p->comments_explicit=(int)cr_u8(&r);if(r.failed)goto bad;
-    uint32_t nlc=cr_u32(&r);if(r.failed||nlc>LF_CACHE_MAX_ITEMS)goto bad;
-    for(uint32_t i=0;i<nlc;i++){char*x=cr_str(&r);if(r.failed){free(x);goto bad;}add_line_comment(p,x);p->comments_explicit=1;free(x);}
-    uint32_t nbc=cr_u32(&r);if(r.failed||nbc>LF_CACHE_MAX_ITEMS)goto bad;
-    for(uint32_t i=0;i<nbc;i++){char*o=cr_str(&r);char*cl=r.failed?NULL:cr_str(&r);if(r.failed||!o||!cl){free(o);free(cl);goto bad;}add_block_comment(p,o,cl);p->comments_explicit=1;free(o);free(cl);}
-    uint32_t nlm=cr_u32(&r);if(r.failed||nlm>LF_CACHE_MAX_ITEMS)goto bad;
-    for(uint32_t i=0;i<nlm;i++){char*x=cr_str(&r);if(r.failed){free(x);goto bad;}add_long_marker(p,x);p->comments_explicit=1;free(x);}
-    uint32_t nr=cr_u32(&r);if(r.failed||nr>LF_CACHE_MAX_ITEMS)goto bad;
-    if(nr){p->rules=(Rule*)calloc(nr,sizeof(*p->rules));if(!p->rules)abort();p->caprules=nr;}
-    for(uint32_t i=0;i<nr;i++){
-        char*name=cr_str(&r);GExpr*g=cache_get_g(&r,0);AExpr*a=cache_get_a(&r,0);
-        if(r.failed||!name||!g){free(name);gfree(g);afree(a);goto bad;}
-        p->rules[p->nrules++]=(Rule){name,g,a};collect_literals(p,g);
-    }
-    if(r.failed||r.i!=r.n)goto bad;
-    {LF_Error tmp={0};if(!validate_profile(p,&tmp,path))goto bad;}
-    return p;
-bad:
-    lf_profile_free(p);return NULL;
-}
-
-static uint64_t cache_hash(const char*source,size_t n){
-    static const char prefix[]="luafront-profile-ir-v1\n";uint64_t h=UINT64_C(1469598103934665603);
-    for(size_t i=0;i<sizeof(prefix)-1;i++){h^=(unsigned char)prefix[i];h*=UINT64_C(1099511628211);}
-    for(size_t i=0;i<n;i++){h^=(unsigned char)source[i];h*=UINT64_C(1099511628211);}return h;
-}
 static char *path_join2(const char*a,const char*b){size_t na=strlen(a),nb=strlen(b);int slash=(na>0&&a[na-1]!='/');char*r=(char*)xmalloc(na+(size_t)slash+nb+1);memcpy(r,a,na);if(slash)r[na++]='/';memcpy(r+na,b,nb+1);return r;}
-static int cache_disabled(void){const char*x=getenv("LUAFRONT_NO_CACHE");return x&&*x&&strcmp(x,"0")!=0;}
-static int cache_trace_enabled(void){const char*x=getenv("LUAFRONT_CACHE_TRACE");return x&&*x&&strcmp(x,"0")!=0;}
-static char *cache_dir(void){
-    if(cache_disabled()) return NULL;
-    const char*override=getenv("LUAFRONT_CACHE_DIR");
-    if(override){
-        if(!*override) return NULL;
-        return xstrdup(override);
-    }
-    const char*xdg=getenv("XDG_CACHE_HOME");
-    if(xdg&&*xdg){
-        char*x=path_join2(xdg,"luafront");
-        char*r=path_join2(x,"profiles");
-        free(x);
-        return r;
-    }
-    const char*home=getenv("HOME");
-    if(home&&*home){
-        char*x=path_join2(home,".cache");
-        char*y=path_join2(x,"luafront");
-        char*r=path_join2(y,"profiles");
-        free(x);
-        free(y);
-        return r;
-    }
-    return NULL;
-}
-static int mkdir_p(const char*path){char*p=xstrdup(path);size_t n=strlen(p);if(n==0){free(p);return 0;}for(size_t i=1;i<n;i++)if(p[i]=='/'){p[i]=0;if(*p&&mkdir(p,0700)!=0&&errno!=EEXIST){free(p);return 0;}p[i]='/';}int ok=(mkdir(p,0700)==0||errno==EEXIST);free(p);return ok;}
-static char *cache_file_path(const char*source,size_t n){char*dir=cache_dir();if(!dir)return NULL;char name[40];snprintf(name,sizeof(name),"%016llx.lfp",(unsigned long long)cache_hash(source,n));char*r=path_join2(dir,name);free(dir);return r;}
-static LF_Profile *cache_try_load(const char*path,const char*source,size_t source_len){
-    char*cp=cache_file_path(source,source_len);if(!cp)return NULL;FILE*f=fopen(cp,"rb");if(!f){free(cp);return NULL;}
-    if(fseek(f,0,SEEK_END)!=0){fclose(f);free(cp);return NULL;}long z=ftell(f);if(z<0||(unsigned long)z>LF_CACHE_MAX_FILE){fclose(f);free(cp);return NULL;}rewind(f);
-    unsigned char*buf=(unsigned char*)xmalloc((size_t)z? (size_t)z:1);size_t got=fread(buf,1,(size_t)z,f);fclose(f);LF_Profile*p=NULL;if(got==(size_t)z)p=cache_deserialize_profile(buf,got,source,source_len,path);free(buf);
-    if(cache_trace_enabled())
-        fprintf(stderr,"luafront: profile cache %s: %s\n",p?"hit":"invalid",cp);
-    free(cp);
-    return p;
-}
-static void cache_store(const LF_Profile*p,const char*source,size_t source_len){
-    char*cp=cache_file_path(source,source_len);
-    if(!cp) return;
-    char*dir=cache_dir();
-    if(!dir||!mkdir_p(dir)){free(dir);free(cp);return;}
-    free(dir);
-    CacheBuf b={0};
-    if(!cache_serialize_profile(&b,p,source,source_len)){free(b.v);free(cp);return;}
-    size_t tn=strlen(cp)+64;
-    char*tmp=(char*)xmalloc(tn);
-    snprintf(tmp,tn,"%s.tmp.%ld",cp,(long)getpid());
-    FILE*f=fopen(tmp,"wb");
-    int ok=0;
-    if(f){
-        int wrote=(fwrite(b.v,1,b.n,f)==b.n);
-        int flushed=(fflush(f)==0);
-        int closed=(fclose(f)==0);
-        ok=wrote&&flushed&&closed;
-        if(ok) ok=(rename(tmp,cp)==0);
-    }
-    if(!ok) remove(tmp);
-    if(cache_trace_enabled())
-        fprintf(stderr,"luafront: profile cache store: %s\n",cp);
-    free(tmp);free(b.v);free(cp);
-}
-
 LF_Profile *lf_profile_load(const char *path, LF_Error *err){
     if (err) memset(err, 0, sizeof(*err));
     FILE*f=fopen(path,"rb");if(!f){LF_Span sp={path,0,0,1,1,1,1};seterrk(err,LF_ERROR_IO,sp,"cannot open profile: %s",strerror(errno));return NULL;}
     if(fseek(f,0,SEEK_END)!=0){fclose(f);return NULL;}long z=ftell(f);if(z<0){fclose(f);return NULL;}rewind(f);
     char *buf=(char*)xmalloc((size_t)z+1);if(fread(buf,1,(size_t)z,f)!=(size_t)z){fclose(f);free(buf);return NULL;}fclose(f);buf[z]=0;
-    LF_Profile*p=cache_try_load(path,buf,(size_t)z);
-    if(!p){
-        if(cache_trace_enabled())fprintf(stderr,"luafront: profile cache miss: %s\n",path);
-        p=lf_profile_load_memory(path,buf,(size_t)z,err);
-        if(p)cache_store(p,buf,(size_t)z);
-    }
+    LF_Profile*p=lf_profile_load_memory(path,buf,(size_t)z,err);
     free(buf);
     if (!p && err && err->kind != LF_ERROR_IO) err->kind = LF_ERROR_PROFILE;
     return p;

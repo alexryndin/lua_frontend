@@ -1,2 +1,2 @@
-#!/usr/bin/env luax
+#!/usr/bin/env lua
 print("shebang-ok")

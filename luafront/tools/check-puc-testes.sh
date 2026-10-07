@@ -22,14 +22,15 @@ fi
 # diagnostics/runtime suite, while custom syntax naturally has different text
 # positions from standard Lua.
 dumper='local f=assert(loadfile(os.getenv("LUAFRONT_CORPUS_FILE"))); io.stdout:write(string.dump(f,true))'
+checker='assert(loadfile(os.getenv("LUAFRONT_CORPUS_FILE")))'
 
 ok=0
 for f in "$testes"/*.lua; do
   [ -f "$f" ] || continue
   base=$(basename "$f")
 
-  "$root/luax" --check --native "$f" >/dev/null
-  "$root/luax" --check --syntax "$profile" "$f" >/dev/null
+  LUAFRONT_CORPUS_FILE="$f" "$root/lua" --native -e "$checker" >/dev/null
+  LUAFRONT_CORPUS_FILE="$f" "$root/lua" --syntax "$profile" -e "$checker" >/dev/null
 
   LUAFRONT_CORPUS_FILE="$f" "$root/lua" --native -e "$dumper" \
     >"$tmp/native.luac"

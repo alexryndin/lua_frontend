@@ -1,6 +1,4 @@
 /lua
-/luafront
-/luax
 /libluafront.a
 /libluafront-lua.a
 /src/*.o

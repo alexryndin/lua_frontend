@@ -12,7 +12,7 @@ kinds, new scope rules, or new operator semantics.
 ## Pipeline
 
 1. Resolve the syntax profile.
-2. Load compiled grammar IR from cache or parse the profile.
+2. Parse the profile into grammar IR.
 3. Validate references, mappings, nullable repetitions and left recursion.
 4. Discover literal terminals used by the grammar.
 5. Tokenize source with fixed Lua lexical classes plus discovered literals.
@@ -44,24 +44,11 @@ Explicit and environment-selected files are strict selections: load/validation
 failure is fatal.  `-E` disables environment-derived choices but not explicit,
 project/system, or builtin selection.
 
-## Compiled profile cache
+## Profile loading
 
-`lf_profile_load` reads the external profile source, derives a content key and
-looks for a serialized grammar-IR entry under the user cache directory.
-
-A cache entry contains:
-
-- cache format magic/version;
-- the exact original profile source bytes;
-- profile name/version metadata;
-- contextual literals;
-- grammar-expression IR;
-- semantic-action IR.
-
-On a hit, the source bytes must match exactly and the reconstructed profile is
-validated again.  A corrupted entry becomes a cache miss and is replaced.
-Therefore the cache cannot change language semantics; it only removes repeated
-profile parsing/IR construction.
+`lf_profile_load` reads the external profile source and parses it into
+grammar IR on every use.  Realistic profiles are a few kilobytes and parse in
+well under a millisecond, so no on-disk compiled-profile cache is kept.
 
 ## Fixed lexical concepts
 

@@ -56,8 +56,6 @@ compiler/runtime with a configurable source frontend installed at the normal
 - small launcher/state adapter for `--syntax` and `--native`;
 - stock PUC multiline REPL with profile-driven expression shorthand at the compiler hook;
 - strict profile search/discovery with builtin fallback;
-- `luafront` AST/token inspection utility;
-- `luax` differential/development runner;
 - reusable `libluafront.a` and `libluafront-lua.a`;
 - public C headers and embedding examples;
 - `make install` / `DESTDIR` packaging support.
@@ -71,7 +69,7 @@ Passing gates:
 - `make sanitize` (ASan + UBSan);
 - public API external compile/run tests;
 - generated Lua-vs-JS-like differential test (180 expressions);
-- loader edge cases, REPL, CLI, profile discovery and cache tests;
+- loader edge cases, REPL, CLI and profile discovery tests;
 - official Lua 5.5 corpus differential: 35/35 source files compile in both
   native and configurable paths and produce identical stripped bytecode.
 
@@ -89,5 +87,4 @@ These can improve the project without changing the 1.0 contract:
 - additional syntax profiles;
 - richer multi-error diagnostic recovery;
 - larger mutation/fuzz campaigns;
-- profile-cache performance telemetry;
 - future PUC patch-level/version updates.

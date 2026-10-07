@@ -19,8 +19,6 @@ STRICT_CFLAGS = -std=c11 -O2 -g -Wall -Wextra -Wpedantic -Werror
 STRICT_LUA_CFLAGS = -std=c11 -O2 -g -Wall -Wextra -Werror
 
 FRONT_OBJ = src/frontend.o src/canonical.o src/builtin_profile.o
-LUAFRONT_OBJ = $(FRONT_OBJ) src/main.o
-LUAX_OBJ = $(FRONT_OBJ) src/puc_bridge.o src/luax.o
 # The PUC Lua compiler/runtime is the parent directory of this project
 # (the repository root).  lua.c/onelua.c/ltests.c provide their own mains or
 # belong to the internal debug build; lua.c itself is built below through the
@@ -32,7 +30,7 @@ LUA_CLI_OBJ = obj/lua_cli.o
 LIBFRONT = libluafront.a
 LIBFRONTLUA = libluafront-lua.a
 
-all: lua luafront luax $(LIBFRONT) $(LIBFRONTLUA)
+all: lua $(LIBFRONT) $(LIBFRONTLUA)
 
 $(LIBFRONT): $(FRONT_OBJ)
 	rm -f $@
@@ -42,19 +40,13 @@ $(LIBFRONTLUA): $(FRONT_OBJ) src/puc_bridge.o $(LUA_OBJ)
 	rm -f $@
 	$(AR) rcs $@ $(FRONT_OBJ) src/puc_bridge.o $(LUA_OBJ)
 
-luafront: $(LUAFRONT_OBJ)
-	$(CC) $(CFLAGS) -o $@ $(LUAFRONT_OBJ)
-
-luax: $(LUAX_OBJ) $(LUA_OBJ)
-	$(CC) $(CFLAGS) -o $@ $(LUAX_OBJ) $(LUA_OBJ) $(LDLIBS_LUA)
-
 lua: $(FRONT_OBJ) src/puc_bridge.o src/lua_main.o src/lua_cli_ext.o $(LUA_CLI_OBJ) $(LUA_OBJ)
 	$(CC) $(CFLAGS) -o $@ $(FRONT_OBJ) src/puc_bridge.o src/lua_main.o src/lua_cli_ext.o $(LUA_CLI_OBJ) $(LUA_OBJ) $(LDLIBS_LUA)
 
-src/frontend.o src/canonical.o src/builtin_profile.o src/main.o: src/%.o: src/%.c include/luafront.h
+src/frontend.o src/canonical.o src/builtin_profile.o: src/%.o: src/%.c include/luafront.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 
-src/puc_bridge.o src/luax.o: src/%.o: src/%.c include/luafront.h include/luafront_lua.h
+src/puc_bridge.o: src/%.o: src/%.c include/luafront.h include/luafront_lua.h
 	$(CC) $(CPPFLAGS) $(LUA_CPPFLAGS) $(CFLAGS) -c -o $@ $<
 
 src/lua_main.o src/lua_cli_ext.o: src/%.o: src/%.c src/lua_cli_ext.h include/luafront.h include/luafront_lua.h
@@ -94,7 +86,7 @@ strict:
 	$(MAKE) CFLAGS='$(STRICT_CFLAGS)' LUA_CFLAGS='$(STRICT_LUA_CFLAGS)' all
 	./tools/embed-profile.py --check
 	./tools/check-upstream.py
-	LUAFRONT_NO_CACHE=1 ./tests/run.sh
+	./tests/run.sh
 
 # Rebuild the complete frontend/backend with ASan+UBSan and run the normal gate.
 sanitize:
@@ -106,7 +98,7 @@ sanitize:
 install: all
 	install -d "$(DESTDIR)$(BINDIR)" "$(DESTDIR)$(LIBDIR)" \
 	           "$(DESTDIR)$(INCLUDEDIR)" "$(DESTDIR)$(DATADIR)/profiles"
-	install -m 755 lua luafront luax "$(DESTDIR)$(BINDIR)/"
+	install -m 755 lua "$(DESTDIR)$(BINDIR)/"
 	install -m 644 $(LIBFRONT) $(LIBFRONTLUA) "$(DESTDIR)$(LIBDIR)/"
 	install -m 644 include/luafront.h include/luafront_lua.h \
 	              ../lua.h ../luaconf.h \
@@ -116,7 +108,7 @@ install: all
 	              "$(DESTDIR)$(DATADIR)/profiles/"
 
 uninstall:
-	rm -f "$(DESTDIR)$(BINDIR)/lua" "$(DESTDIR)$(BINDIR)/luafront" "$(DESTDIR)$(BINDIR)/luax"
+	rm -f "$(DESTDIR)$(BINDIR)/lua"
 	rm -f "$(DESTDIR)$(LIBDIR)/$(LIBFRONT)" "$(DESTDIR)$(LIBDIR)/$(LIBFRONTLUA)"
 	rm -f "$(DESTDIR)$(INCLUDEDIR)/luafront.h" "$(DESTDIR)$(INCLUDEDIR)/luafront_lua.h" \
 	      "$(DESTDIR)$(INCLUDEDIR)/lua.h" "$(DESTDIR)$(INCLUDEDIR)/luaconf.h" \
@@ -124,9 +116,9 @@ uninstall:
 	rm -f "$(DESTDIR)$(DATADIR)/profiles/lua55.syntax" "$(DESTDIR)$(DATADIR)/profiles/jslike.syntax"
 
 clean:
-	rm -f $(FRONT_OBJ) src/main.o src/puc_bridge.o src/luax.o \
+	rm -f $(FRONT_OBJ) src/puc_bridge.o \
 	      src/lua_main.o src/lua_cli_ext.o \
-	      lua luafront luax $(LIBFRONT) $(LIBFRONTLUA)
+	      lua $(LIBFRONT) $(LIBFRONTLUA)
 	rm -rf obj
 
 .PHONY: all test corpus strict sanitize clean install uninstall regen-profile check-generated check-upstream
