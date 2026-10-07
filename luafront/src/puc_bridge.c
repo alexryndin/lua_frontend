@@ -228,6 +228,30 @@ static void compile_hook_job(lua_State *L, void *ud) {
     }
 
     LF_Error e={0};
+
+    /* Stock PUC's REPL probes each line as `return <line>;` before trying it
+       as a statement.  Keep lua.c completely upstream by recognizing only
+       that probe at the compiler-hook boundary and delegating the original
+       line to the profile's optional `repl_expr` rule. */
+    if (strcmp(j->chunkname, "=stdin") == 0 &&
+        lf_profile_has_rule(j->profile, "repl_expr") && j->len >= 8 &&
+        memcmp(j->buf, "return ", 7) == 0 && j->buf[j->len - 1] == ';') {
+        LF_Ast *rast = lf_parse_rule(j->profile, "repl_expr", "=stdin",
+                                     j->buf + 7, j->len - 8, &e);
+        if (rast != NULL) {
+            int rst = compile_ast_raw(L, rast, j->chunkname, &e);
+            lf_ast_free(rast);
+            if (rst != LUA_OK) luaD_throw(L, cast(TStatus, rst));
+            return;
+        }
+        if (e.kind == LF_ERROR_INCOMPLETE)
+            lua_pushfstring(L, "%s <eof>", e.message[0] ? e.message :
+                                              "incomplete expression");
+        else
+            lua_pushstring(L, e.message[0] ? e.message :
+                                             "not a REPL expression");
+        luaD_throw(L, LUA_ERRSYNTAX);
+    }
     if (getenv("LF_TRACE") && j->len > 1000) fprintf(stderr,"[lf] parse len=%zu\n",j->len);
     LF_Ast *ast=lf_parse(j->profile,j->chunkname,j->buf,j->len,&e);
     if (getenv("LF_TRACE") && j->len > 1000) fprintf(stderr,"[lf] parse done ast=%p\n",(void*)ast);
@@ -247,7 +271,16 @@ static void compile_hook_job(lua_State *L, void *ud) {
             /* Native accepted: remove its closure and surface our failure. */
             L->top.p--;
         }
-        if (e.span.line_start)
+        if (e.kind == LF_ERROR_INCOMPLETE) {
+            if (e.span.line_start)
+                lua_pushfstring(L, "%s:%d:%d: %s <eof>", j->chunkname,
+                                (int)e.span.line_start, (int)e.span.col_start,
+                                e.message[0] ? e.message : "incomplete input");
+            else
+                lua_pushfstring(L, "%s <eof>",
+                                e.message[0] ? e.message : "incomplete input");
+        }
+        else if (e.span.line_start)
             lua_pushfstring(L,"%s:%d:%d: %s",j->chunkname,
                             (int)e.span.line_start,(int)e.span.col_start,e.message);
         else
