@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.1.0 — 2026-10-07
+
+- moved comments out of the hardcoded lexer into the syntax profile:
+  `line_comment` / `block_comment` / `lua_long_comment` directives;
+- comments are pure lexer trivia — never part of the grammar, never in the
+  canonical AST, allowed between any two tokens;
+- profiles without comment directives keep the built-in Lua comment set;
+  any directive replaces it (jslike now uses `//` and `/* ... */`);
+- added lexical-conflict validation: delimiters must be non-empty and
+  single-line; openers must not shadow fixed lexical classes; an opener must
+  not equal or be a prefix of a grammar terminal (the reverse is allowed);
+  the same opener in two comment categories is rejected;
+- `lua_long_comment` is a dedicated primitive (marker + parameterized Lua
+  long bracket `--[=*[ ... ]=*]`);
+- jslike: `//` is now a comment, integer division is spelled `idiv`
+  (canonical Lua `//` operation is unchanged);
+- bumped the compiled-profile cache format (old entries are rebuilt).
+
+## 1.0.1 — 2026-10-07
+
+- removed the copied/adapted `src/lua_cli.c`;
+- vendored the exact upstream PUC Lua 5.5.0 `lua.c` (Git blob `5054583de93857caa7115ed7fc520ab232ef1099`);
+- build upstream `lua.c` unchanged, using compile-time aliases only to rename its `main` and intercept `luaL_newstate`;
+- moved luafront CLI selection into a small launcher that strips `--syntax` / `--native` and then delegates all ordinary Lua option processing to PUC;
+- moved profile installation into a tiny `lua_State` creation adapter;
+- removed the forked/custom REPL implementation: PUC's stock REPL now works through the source-compiler hook, including profile `repl_expr` and `<eof>` incomplete-input handling;
+- added an upstream-integrity gate for the vendored `lua.c`;
+- preserved the complete CLI/search/cache/API/property test suite under normal, `-Werror`, ASan and UBSan builds.
+
 ## 1.0.0 — 2026-10-06
 
 - completed a PUC-compatible `lua` CLI with `--syntax` and `--native`;

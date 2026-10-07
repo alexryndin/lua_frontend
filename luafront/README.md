@@ -14,7 +14,7 @@ PUC parser/code generator.  Lua values, scope rules, closures, multiple
 returns, varargs, goto rules, `<const>/<close>`, coroutines, bytecode and VM
 semantics are therefore not configurable.
 
-Release status: **1.0.0 / feature-complete for the stated design**.
+Release status: **1.0.1 / feature-complete for the stated design**.
 
 ## Quick start
 
@@ -56,13 +56,21 @@ print(max(x, y));
 ```
 
 The JS-like profile maps `let`, braces, `&&`, `||`, `!`, `!=`, `null`, and
-other surface forms into canonical Lua constructs.  No JavaScript runtime
-semantics are introduced.
+other surface forms into canonical Lua constructs.  It uses JS-style comments
+(`//` and `/* ... */`); since `//` is a comment there, integer division is
+written as the word operator `idiv` (mapping to the canonical Lua `//`).  No
+JavaScript runtime semantics are introduced.
 
 ## `lua` command line
 
-The primary executable is a PUC-compatible Lua interpreter with two additional
-options:
+The primary executable uses the **unmodified upstream PUC Lua `lua.c`** (the
+repository root file, guarded byte-for-byte by `make check-upstream`).
+A small launcher removes the two luafront-specific options, selects the profile,
+installs the source-compiler hook when PUC creates its `lua_State`, and then
+hands control to the stock PUC CLI.  This keeps option parsing, `arg`, signal
+handling, `LUA_INIT`, `-e`, `-l`, stdin handling and the REPL in upstream code.
+
+The launcher adds two options:
 
 ```text
 --syntax FILE    select a syntax profile explicitly
@@ -98,8 +106,11 @@ Binary chunks always bypass the configurable source frontend and go directly
 to PUC's binary undumper.  `load(..., "b")` / `load(..., "t")` mode checks and
 custom `load` readers preserve PUC behavior.
 
-The REPL is profile-aware.  Profiles can define the optional `repl_expr` rule
-to provide expression shorthand without hard-coding Lua keywords in the CLI.
+The REPL is still PUC's normal REPL.  The compiler hook recognizes PUC's
+expression probe at the load boundary and delegates the original expression to
+the profile's optional `repl_expr` rule.  Incomplete frontend input is reported
+with PUC's `<eof>` convention, so upstream multiline REPL handling remains
+unchanged and no surface-language keyword is hard-coded into `lua.c`.
 
 ## Profile discovery
 
@@ -173,10 +184,12 @@ rule add_tail = "+":op primary:value => Tail(op, value);
 rule primary = NAME:value => Pass(value) | NUMBER:value => Pass(value);
 ```
 
-`NAME`, `NUMBER`, `STRING`, and `EOF` are fixed lexical classes.  Whitespace,
-Lua short/long strings and Lua-style comments are fixed lexical concepts.
-Keywords, operators, punctuation and delimiters come from string terminals in
-the profile and use longest-match tokenization.
+`NAME`, `NUMBER`, `STRING`, and `EOF` are fixed lexical classes, as are
+whitespace and Lua short/long strings.  Comments are configurable trivia via
+`line_comment` / `block_comment` / `lua_long_comment` directives (skipped by
+the lexer, never visible to the grammar); without directives the built-in Lua
+comment set is used.  Keywords, operators, punctuation and delimiters come
+from string terminals in the profile and use longest-match tokenization.
 
 The profile language contains no executable callbacks.  Semantic mappings may
 only construct the fixed canonical Lua AST or use fixed mapping helpers such as
@@ -301,20 +314,17 @@ make sanitize
 
 Official Lua 5.5 syntax/compiler differential gate:
 
-Official Lua 5.5 syntax/compiler differential gate (the repository's own
-corpus works directly):
-
 ```sh
-make -C luafront corpus TESTES=../testes
+make corpus TESTES=/path/to/lua-5.5/testes
 ```
 
-On the official Lua 5.5 corpus, all **35/35** `testes/*.lua` files:
+On the available official Lua 5.5 corpus, all **35/35** `testes/*.lua` files:
 
 - compile through the native PUC parser;
 - compile through `lua55.syntax` and the configurable frontend;
 - produce **byte-for-byte identical stripped bytecode** in both paths.
 
-The regular test gate additionally covers the full CLI, REPL, profile search,
+The regular test gate additionally covers the upstream CLI integration, REPL, profile search,
 profile cache corruption/recovery, binary-safe strings, all Lua short-string
 escape forms, dynamic loading, binary chunks, public C APIs, and a
 deterministic generated Lua-vs-JS-like differential test over 180 expressions.

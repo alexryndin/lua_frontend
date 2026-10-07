@@ -1,0 +1,8 @@
+// line comment
+let a = 10; /* block
+   comment */ let b = 3;
+function f(/* between */ x, y) { return x + y; }
+print(f(a, b), 10 idiv 3, 10 + 8 idiv 3 * 2); // trailing
+print("still // not a comment", "/* x */");
+/* final block ok */
+// eof line comment without newline

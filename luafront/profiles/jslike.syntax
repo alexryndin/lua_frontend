@@ -1,5 +1,7 @@
 profile jslike;
 version "1.0.0";
+line_comment "//";
+block_comment "/*" "*/";
 
 rule chunk = block:body EOF => Chunk(body);
 rule repl_expr = exp:value EOF => Chunk(Block(Return(ExprList(value))));
@@ -44,7 +46,8 @@ rule add_tail = addop:op mul_expr:value => Tail(op, value);
 rule addop = "+" | "-";
 rule mul_expr = unary_expr:first { mul_tail:rest } => Fold(first, rest);
 rule mul_tail = mulop:op unary_expr:value => Tail(op, value);
-rule mulop = "*" | "/" | "%";
+rule mulop = "*" | "/" | "%" | idiv_op;
+rule idiv_op = "idiv" => Pass("//");
 rule unary_expr = unary_pref | pow_expr;
 rule unary_pref = unop:op unary_expr:value => Unary(op, value);
 rule unop = neg_op | not_op | len_op | bnot_op;

@@ -29,6 +29,16 @@ grep -q 'profile cache store' "$tmp/three.err"
 "$root/luafront" --check-profile "$profile" >/dev/null 2>"$tmp/four.err"
 grep -q 'profile cache hit' "$tmp/four.err"
 
+# A stale cache format version must be rejected by the format field alone
+# (the first byte after the 8-byte magic is the little-endian u32 format).
+printf '\377' | dd of="$cachefile" bs=1 seek=8 conv=notrunc status=none
+"$root/luafront" --check-profile "$profile" >/dev/null 2>"$tmp/fmt.err"
+grep -q 'profile cache invalid' "$tmp/fmt.err"
+grep -q 'profile cache miss' "$tmp/fmt.err"
+grep -q 'profile cache store' "$tmp/fmt.err"
+"$root/luafront" --check-profile "$profile" >/dev/null 2>"$tmp/fmt2.err"
+grep -q 'profile cache hit' "$tmp/fmt2.err"
+
 # A source change gets a different content key; exact source bytes are also
 # embedded in each cache entry to make hash collisions harmless.
 printf '\n# cache-key-change\n' >>"$profile"

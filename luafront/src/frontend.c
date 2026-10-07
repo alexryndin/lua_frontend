@@ -82,6 +82,11 @@ typedef struct {
     AExpr *action;
 } Rule;
 
+typedef struct {
+    char *open;
+    char *close;
+} BlockComment;
+
 struct LF_Profile {
     char *name;
     char *version;
@@ -91,6 +96,15 @@ struct LF_Profile {
     size_t nliterals, capliterals;
     char **contextuals;
     size_t ncontextuals, capcontextuals;
+    /* configurable comment trivia; when comments_explicit is zero the lexer
+       falls back to the built-in Lua comment set ('--' line + '--' long) */
+    int comments_explicit;
+    char **line_comments;
+    size_t nline_comments, capline_comments;
+    BlockComment *block_comments;
+    size_t nblock_comments, capblock_comments;
+    char **long_markers;   /* lua_long_comment markers (marker + long bracket) */
+    size_t nlong_markers, caplong_markers;
 };
 
 static GExpr *gnew(GKind k) {
@@ -127,6 +141,24 @@ static void add_contextual(LF_Profile *p, const char *s) {
 static int is_contextual(const LF_Profile *p, const char *s) {
     for(size_t i=0;i<p->ncontextuals;i++) if(strcmp(p->contextuals[i],s)==0) return 1;
     return 0;
+}
+
+static void add_line_comment(LF_Profile *p, const char *s) {
+    for(size_t i=0;i<p->nline_comments;i++) if(strcmp(p->line_comments[i],s)==0) return;
+    if(p->nline_comments==p->capline_comments){p->capline_comments=p->capline_comments?p->capline_comments*2:8;p->line_comments=(char**)xrealloc(p->line_comments,p->capline_comments*sizeof(*p->line_comments));}
+    p->line_comments[p->nline_comments++]=xstrdup(s);
+}
+static void add_block_comment(LF_Profile *p, const char *open, const char *close) {
+    for(size_t i=0;i<p->nblock_comments;i++) if(strcmp(p->block_comments[i].open,open)==0) return;
+    if(p->nblock_comments==p->capblock_comments){p->capblock_comments=p->capblock_comments?p->capblock_comments*2:8;p->block_comments=(BlockComment*)xrealloc(p->block_comments,p->capblock_comments*sizeof(*p->block_comments));}
+    p->block_comments[p->nblock_comments].open=xstrdup(open);
+    p->block_comments[p->nblock_comments].close=xstrdup(close);
+    p->nblock_comments++;
+}
+static void add_long_marker(LF_Profile *p, const char *s) {
+    for(size_t i=0;i<p->nlong_markers;i++) if(strcmp(p->long_markers[i],s)==0) return;
+    if(p->nlong_markers==p->caplong_markers){p->caplong_markers=p->caplong_markers?p->caplong_markers*2:8;p->long_markers=(char**)xrealloc(p->long_markers,p->caplong_markers*sizeof(*p->long_markers));}
+    p->long_markers[p->nlong_markers++]=xstrdup(s);
 }
 
 /* ---------- profile lexer/parser ---------- */
@@ -278,6 +310,78 @@ static int validate_left_recursion(LF_Profile*p,LF_Error*err,const char*file){
     return ok;
 }
 
+/* Validate one comment opener spelling against the fixed lexical classes:
+** STRING quotes, long-string '[', NAME start and NUMBER start.  A comment
+** scanner runs before token scanning, so such an opener would shadow the
+** fixed class and must be rejected. */
+static int comment_shadows_fixed_class(const char *s, const char **why) {
+    unsigned char c=(unsigned char)s[0];
+    if(c=='"'||c=='\''){*why="STRING";return 1;}
+    if(c=='['){*why="long string";return 1;}
+    if(isalpha(c)||c=='_'){*why="NAME";return 1;}
+    if(isdigit(c)||(c=='.'&&isdigit((unsigned char)s[1]))){*why="NUMBER";return 1;}
+    return 0;
+}
+
+static int is_str_prefix_of(const char *p, size_t np, const char *q) {
+    size_t nq=strlen(q);
+    return np<nq && memcmp(p,q,np)==0;
+}
+
+/* Validate the declared comment set.  Rules (asymmetric on purpose):
+** - delimiters must be non-empty and single-line;
+** - an opener must not shadow a fixed lexical class (STRING/NAME/NUMBER/...);
+** - an opener must not equal or be a prefix of a grammar terminal (the
+**   comment scanner runs first and would make the terminal unreachable);
+**   the reverse — a terminal that is a prefix of an opener — is fine;
+** - the same opener in two comment categories is ambiguous (exception:
+**   line_comment + lua_long_comment with the same marker, because the long
+**   candidate is strictly longer whenever a long bracket follows). */
+static int validate_comments(LF_Profile *p, LF_Error *err, const char *file) {
+    if(!p->comments_explicit) return 1;
+    for(size_t i=0;i<p->nline_comments;i++){
+        const char*s=p->line_comments[i]; size_t ns=strlen(s); const char*why;
+        LF_Span sp={file,0,0,1,1,1,1};
+        if(ns==0||strchr(s,'\n')||strchr(s,'\r')){seterr(err,sp,"line_comment prefix must be non-empty and single-line");return 0;}
+        if(comment_shadows_fixed_class(s,&why)){seterr(err,sp,"line_comment \"%s\" shadows fixed lexical class %s",s,why);return 0;}
+        for(size_t j=0;j<p->nliterals;j++){
+            if(ns==strlen(p->literals[j])&&strcmp(s,p->literals[j])==0){seterr(err,sp,"lexical spelling '%s' is both a comment and a grammar terminal",s);return 0;}
+            if(is_str_prefix_of(s,ns,p->literals[j])){seterr(err,sp,"comment opener '%s' shadows longer grammar terminal '%s'",s,p->literals[j]);return 0;}
+        }
+        for(size_t j=0;j<p->nblock_comments;j++)
+            if(strcmp(s,p->block_comments[j].open)==0){seterr(err,sp,"ambiguous comment opener '%s' declared as both line and block comment",s);return 0;}
+    }
+    for(size_t i=0;i<p->nblock_comments;i++){
+        const char*o=p->block_comments[i].open; size_t no=strlen(o);
+        const char*c=p->block_comments[i].close; size_t nc=strlen(c);
+        const char*why;
+        LF_Span sp={file,0,0,1,1,1,1};
+        if(no==0||nc==0||strchr(o,'\n')||strchr(o,'\r')||strchr(c,'\n')||strchr(c,'\r')){seterr(err,sp,"block_comment delimiters must be non-empty and single-line");return 0;}
+        if(comment_shadows_fixed_class(o,&why)){seterr(err,sp,"block_comment opener \"%s\" shadows fixed lexical class %s",o,why);return 0;}
+        for(size_t j=0;j<p->nliterals;j++){
+            if(no==strlen(p->literals[j])&&strcmp(o,p->literals[j])==0){seterr(err,sp,"lexical spelling '%s' is both a comment and a grammar terminal",o);return 0;}
+            if(is_str_prefix_of(o,no,p->literals[j])){seterr(err,sp,"comment opener '%s' shadows longer grammar terminal '%s'",o,p->literals[j]);return 0;}
+        }
+        for(size_t j=0;j<p->nblock_comments;j++)
+            if(i!=j&&strcmp(o,p->block_comments[j].open)==0){seterr(err,sp,"duplicate block_comment opener '%s'",o);return 0;}
+        for(size_t j=0;j<p->nlong_markers;j++){
+            size_t nm=strlen(p->long_markers[j]);
+            if(nm<=no&&memcmp(p->long_markers[j],o,nm)==0){seterr(err,sp,"ambiguous comment opener '%s': lua_long_comment marker overlaps block_comment opener '%s'",p->long_markers[j],o);return 0;}
+        }
+    }
+    for(size_t i=0;i<p->nlong_markers;i++){
+        const char*s=p->long_markers[i]; size_t ns=strlen(s); const char*why;
+        LF_Span sp={file,0,0,1,1,1,1};
+        if(ns==0||strchr(s,'\n')||strchr(s,'\r')){seterr(err,sp,"lua_long_comment marker must be non-empty and single-line");return 0;}
+        if(comment_shadows_fixed_class(s,&why)){seterr(err,sp,"lua_long_comment marker \"%s\" shadows fixed lexical class %s",s,why);return 0;}
+        for(size_t j=0;j<p->nliterals;j++){
+            if(ns==strlen(p->literals[j])&&strcmp(s,p->literals[j])==0){seterr(err,sp,"lexical spelling '%s' is both a comment and a grammar terminal",s);return 0;}
+            if(is_str_prefix_of(s,ns,p->literals[j])){seterr(err,sp,"comment opener '%s' shadows longer grammar terminal '%s'",s,p->literals[j]);return 0;}
+        }
+    }
+    return 1;
+}
+
 static int validate_profile(LF_Profile *p, LF_Error *err, const char *file) {
     if(!find_rule(p,"chunk")){
         LF_Span sp={file,0,0,1,1,1,1};
@@ -290,6 +394,7 @@ static int validate_profile(LF_Profile *p, LF_Error *err, const char *file) {
            !validate_action_refs(p->rules[i].expr,p->rules[i].action,err,file) ||
            !validate_nonempty_repetitions(p,p->rules[i].expr,err,file)) return 0;
     }
+    if(!validate_comments(p,err,file)) return 0;
     return validate_left_recursion(p,err,file);
 }
 
@@ -318,7 +423,30 @@ LF_Profile *lf_profile_load_memory(const char *source_name, const char *source,
             if(!pexpect(&q,PT_SEMI,"';'"))goto bad;
             continue;
         }
-        if(q.cur.k!=PT_ID||strcmp(q.cur.text,"rule")!=0){seterr(err,pspan(&q,q.cur.off,q.cur.line,q.cur.col),"expected 'rule', 'version', or 'contextual'");goto bad;}pnext(&q);
+        if(q.cur.k==PT_ID && strcmp(q.cur.text,"line_comment")==0){
+            pnext(&q);
+            if(q.cur.k!=PT_STR){seterr(err,pspan(&q,q.cur.off,q.cur.line,q.cur.col),"expected string after 'line_comment'");goto bad;}
+            add_line_comment(p,q.cur.text); p->comments_explicit=1; pnext(&q);
+            if(!pexpect(&q,PT_SEMI,"';'"))goto bad;
+            continue;
+        }
+        if(q.cur.k==PT_ID && strcmp(q.cur.text,"block_comment")==0){
+            pnext(&q);
+            if(q.cur.k!=PT_STR){seterr(err,pspan(&q,q.cur.off,q.cur.line,q.cur.col),"expected opener string after 'block_comment'");goto bad;}
+            char *bo=xstrdup(q.cur.text); pnext(&q);
+            if(q.cur.k!=PT_STR){free(bo);seterr(err,pspan(&q,q.cur.off,q.cur.line,q.cur.col),"expected closer string after 'block_comment' opener");goto bad;}
+            add_block_comment(p,bo,q.cur.text); p->comments_explicit=1; free(bo); pnext(&q);
+            if(!pexpect(&q,PT_SEMI,"';'"))goto bad;
+            continue;
+        }
+        if(q.cur.k==PT_ID && strcmp(q.cur.text,"lua_long_comment")==0){
+            pnext(&q);
+            if(q.cur.k!=PT_STR){seterr(err,pspan(&q,q.cur.off,q.cur.line,q.cur.col),"expected string after 'lua_long_comment'");goto bad;}
+            add_long_marker(p,q.cur.text); p->comments_explicit=1; pnext(&q);
+            if(!pexpect(&q,PT_SEMI,"';'"))goto bad;
+            continue;
+        }
+        if(q.cur.k!=PT_ID||strcmp(q.cur.text,"rule")!=0){seterr(err,pspan(&q,q.cur.off,q.cur.line,q.cur.col),"expected 'rule', 'version', 'contextual', 'line_comment', 'block_comment', or 'lua_long_comment'");goto bad;}pnext(&q);
         if(q.cur.k!=PT_ID){seterr(err,pspan(&q,q.cur.off,q.cur.line,q.cur.col),"expected rule name");goto bad;}char *rn=xstrdup(q.cur.text);pnext(&q);
         if(find_rule(p,rn)){seterr(err,pspan(&q,q.cur.off,q.cur.line,q.cur.col),"duplicate rule '%s'",rn);free(rn);goto bad;}
         if(!pexpect(&q,PT_EQ,"'='")){free(rn);goto bad;}GExpr*g=parse_galt(&q);if(!g||q.failed){free(rn);gfree(g);goto bad;}AExpr*a=NULL;if(paccept(&q,PT_ARROW)){a=parse_action(&q);if(!a){free(rn);gfree(g);goto bad;}}if(!pexpect(&q,PT_SEMI,"';'")){free(rn);gfree(g);afree(a);goto bad;}
@@ -340,7 +468,7 @@ bad2: if(err && err->kind!=LF_ERROR_IO) err->kind=LF_ERROR_PROFILE; lf_profile_f
 ** a hash collision can never select a profile for different source text.
 */
 
-#define LF_CACHE_FORMAT 1u
+#define LF_CACHE_FORMAT 2u
 #define LF_CACHE_MAX_FILE (64u * 1024u * 1024u)
 #define LF_CACHE_MAX_ITEMS (1024u * 1024u)
 static const unsigned char lf_cache_magic[8] = {'L','F','P','I','R','0','0','1'};
@@ -405,10 +533,15 @@ static AExpr *cache_get_a(CacheRead*r,unsigned depth){
 
 static int cache_serialize_profile(CacheBuf*b,const LF_Profile*p,const char*source,size_t source_len){
     if(source_len>UINT32_MAX||p->nrules>UINT32_MAX||p->ncontextuals>UINT32_MAX)return 0;
+    if(p->nline_comments>UINT32_MAX||p->nblock_comments>UINT32_MAX||p->nlong_markers>UINT32_MAX)return 0;
     cb_bytes(b,lf_cache_magic,sizeof(lf_cache_magic));cb_u32(b,LF_CACHE_FORMAT);
     cb_u32(b,(uint32_t)source_len);cb_bytes(b,source,source_len);
     cb_str(b,p->name?p->name:"");cb_u8(b,p->version!=NULL);if(p->version)cb_str(b,p->version);
     cb_u32(b,(uint32_t)p->ncontextuals);for(size_t i=0;i<p->ncontextuals;i++)cb_str(b,p->contextuals[i]);
+    cb_u8(b,(unsigned char)(p->comments_explicit?1:0));
+    cb_u32(b,(uint32_t)p->nline_comments);for(size_t i=0;i<p->nline_comments;i++)cb_str(b,p->line_comments[i]);
+    cb_u32(b,(uint32_t)p->nblock_comments);for(size_t i=0;i<p->nblock_comments;i++){cb_str(b,p->block_comments[i].open);cb_str(b,p->block_comments[i].close);}
+    cb_u32(b,(uint32_t)p->nlong_markers);for(size_t i=0;i<p->nlong_markers;i++)cb_str(b,p->long_markers[i]);
     cb_u32(b,(uint32_t)p->nrules);for(size_t i=0;i<p->nrules;i++){cb_str(b,p->rules[i].name);cache_put_g(b,p->rules[i].expr,0);cache_put_a(b,p->rules[i].action,0);}
     return !b->failed;
 }
@@ -422,6 +555,13 @@ static LF_Profile *cache_deserialize_profile(const unsigned char*data,size_t len
     if(cr_u8(&r)){p->version=cr_str(&r);if(r.failed)goto bad;}
     uint32_t nc=cr_u32(&r);if(r.failed||nc>LF_CACHE_MAX_ITEMS)goto bad;
     for(uint32_t i=0;i<nc;i++){char*x=cr_str(&r);if(r.failed){free(x);goto bad;}add_contextual(p,x);free(x);}
+    p->comments_explicit=(int)cr_u8(&r);if(r.failed)goto bad;
+    uint32_t nlc=cr_u32(&r);if(r.failed||nlc>LF_CACHE_MAX_ITEMS)goto bad;
+    for(uint32_t i=0;i<nlc;i++){char*x=cr_str(&r);if(r.failed){free(x);goto bad;}add_line_comment(p,x);p->comments_explicit=1;free(x);}
+    uint32_t nbc=cr_u32(&r);if(r.failed||nbc>LF_CACHE_MAX_ITEMS)goto bad;
+    for(uint32_t i=0;i<nbc;i++){char*o=cr_str(&r);char*cl=r.failed?NULL:cr_str(&r);if(r.failed||!o||!cl){free(o);free(cl);goto bad;}add_block_comment(p,o,cl);p->comments_explicit=1;free(o);free(cl);}
+    uint32_t nlm=cr_u32(&r);if(r.failed||nlm>LF_CACHE_MAX_ITEMS)goto bad;
+    for(uint32_t i=0;i<nlm;i++){char*x=cr_str(&r);if(r.failed){free(x);goto bad;}add_long_marker(p,x);p->comments_explicit=1;free(x);}
     uint32_t nr=cr_u32(&r);if(r.failed||nr>LF_CACHE_MAX_ITEMS)goto bad;
     if(nr){p->rules=(Rule*)calloc(nr,sizeof(*p->rules));if(!p->rules)abort();p->caprules=nr;}
     for(uint32_t i=0;i<nr;i++){
@@ -576,7 +716,7 @@ LF_Profile *lf_profile_discover(const char *explicit_path, int noenv,
     return lf_profile_builtin_lua55(err);
 }
 
-void lf_profile_free(LF_Profile*p){if(!p)return;free(p->name);free(p->version);for(size_t i=0;i<p->nrules;i++){free(p->rules[i].name);gfree(p->rules[i].expr);afree(p->rules[i].action);}free(p->rules);for(size_t i=0;i<p->nliterals;i++)free(p->literals[i]);free(p->literals);for(size_t i=0;i<p->ncontextuals;i++)free(p->contextuals[i]);free(p->contextuals);free(p);}
+void lf_profile_free(LF_Profile*p){if(!p)return;free(p->name);free(p->version);for(size_t i=0;i<p->nrules;i++){free(p->rules[i].name);gfree(p->rules[i].expr);afree(p->rules[i].action);}free(p->rules);for(size_t i=0;i<p->nliterals;i++)free(p->literals[i]);free(p->literals);for(size_t i=0;i<p->ncontextuals;i++)free(p->contextuals[i]);free(p->contextuals);for(size_t i=0;i<p->nline_comments;i++)free(p->line_comments[i]);free(p->line_comments);for(size_t i=0;i<p->nblock_comments;i++){free(p->block_comments[i].open);free(p->block_comments[i].close);}free(p->block_comments);for(size_t i=0;i<p->nlong_markers;i++)free(p->long_markers[i]);free(p->long_markers);free(p);}
 const char*lf_profile_name(const LF_Profile*p){return p?p->name:NULL;}
 const char*lf_profile_version(const LF_Profile*p){return p?p->version:NULL;}
 size_t lf_profile_rule_count(const LF_Profile*p){return p?p->nrules:0;}
@@ -737,14 +877,85 @@ static int scan_long(const char*file,const char*s,size_t n,size_t*i,unsigned*lin
     }
 }
 
+/* ---- configurable comment trivia ----
+**
+** Comments are pure lexer-level trivia: they are skipped between any two
+** meaningful tokens and never reach the grammar or the canonical AST.  On
+** each position the comment scanner runs after whitespace and before any
+** token scanning; among all candidates (lua_long marker+bracket, block
+** opener, line prefix) the longest match wins.  Validation rejects profiles
+** where that order could still be ambiguous.  A profile without comment
+** directives keeps the built-in Lua set: line '--' plus long '--' + bracket.
+*/
+
+enum { LF_COMMENT_NONE=0, LF_COMMENT_LINE, LF_COMMENT_BLOCK, LF_COMMENT_LUA_LONG };
+
+typedef struct {
+    int kind;
+    size_t len;         /* full candidate length used for longest match */
+    size_t marker_len;  /* lua_long_comment: marker length; pos+len is at the bracket */
+    size_t eq, openlen; /* lua_long_comment bracket level / opener length */
+    size_t block;       /* block comment index */
+} CommentMatch;
+
+static int match_comment(const LF_Profile *p, const char *s, size_t n, size_t i, CommentMatch *m) {
+    size_t best=0; int kind=LF_COMMENT_NONE;
+    size_t bmark=0,beq=0,bopen=0,bidx=0;
+    size_t nlong=p->comments_explicit?p->nlong_markers:1;
+    for(size_t k=0;k<nlong;k++){
+        const char*mark=p->comments_explicit?p->long_markers[k]:"--";
+        size_t l=strlen(mark);
+        if(n-i<l||memcmp(s+i,mark,l)!=0) continue;
+        size_t eq=0,ol=0;
+        if(!long_bracket(s,n,i+l,&eq,&ol)) continue;
+        if(l+ol>best){best=l+ol;kind=LF_COMMENT_LUA_LONG;bmark=l;beq=eq;bopen=ol;}
+    }
+    size_t nblock=p->comments_explicit?p->nblock_comments:0;
+    for(size_t k=0;k<nblock;k++){
+        size_t l=strlen(p->block_comments[k].open);
+        if(n-i<l||memcmp(s+i,p->block_comments[k].open,l)!=0) continue;
+        if(l>best){best=l;kind=LF_COMMENT_BLOCK;bidx=k;}
+    }
+    size_t nline=p->comments_explicit?p->nline_comments:1;
+    for(size_t k=0;k<nline;k++){
+        const char*pre=p->comments_explicit?p->line_comments[k]:"--";
+        size_t l=strlen(pre);
+        if(n-i<l||memcmp(s+i,pre,l)!=0) continue;
+        if(l>best){best=l;kind=LF_COMMENT_LINE;}
+    }
+    if(kind==LF_COMMENT_NONE) return 0;
+    m->kind=kind;m->len=best;m->marker_len=bmark;m->eq=beq;m->openlen=bopen;m->block=bidx;
+    return 1;
+}
+
 static int lex_source(LF_Profile*p,const char*file,const char*s,size_t n,Tokens*out,LF_Error*err){
     size_t i=0;unsigned line=1,col=1;
     while(i<n){unsigned char c=(unsigned char)s[i];
         if(ascii_space(c)){if(c=='\n'||c=='\r')consume_newline(s,n,&i,&line,&col);else{i++;col++;}continue;}
-        if(i+1<n&&s[i]=='-'&&s[i+1]=='-'){
-            size_t st=i;unsigned sl=line,sc=col;i+=2;col+=2;
-            size_t eq=0,ol=0;if(i<n&&long_bracket(s,n,i,&eq,&ol)){STok dummy={0};if(!scan_long(file,s,n,&i,&line,&col,eq,ol,0,&dummy,err,st,sl,sc))return 0;continue;}
-            while(i<n&&s[i]!='\n'&&s[i]!='\r'){i++;col++;}continue;
+        CommentMatch cm;
+        if(match_comment(p,s,n,i,&cm)){
+            size_t st=i;unsigned sl=line,sc=col;
+            if(cm.kind==LF_COMMENT_LUA_LONG){
+                i+=cm.marker_len;col+=(unsigned)cm.marker_len;  /* i now at the bracket */
+                STok dummy={0};
+                if(!scan_long(file,s,n,&i,&line,&col,cm.eq,cm.openlen,0,&dummy,err,st,sl,sc))return 0;
+            }
+            else if(cm.kind==LF_COMMENT_BLOCK){
+                const char*close=p->block_comments[cm.block].close;
+                size_t cl=strlen(close);
+                i+=cm.len;col+=(unsigned)cm.len;  /* consume opener */
+                for(;;){  /* non-nested: first closing delimiter wins */
+                    if(i>=n){LF_Span sp={file,st,i,sl,sc,line,col};seterrk(err,LF_ERROR_INCOMPLETE,sp,"unfinished block comment");return 0;}
+                    if(cl<=n-i&&memcmp(s+i,close,cl)==0){i+=cl;col+=(unsigned)cl;break;}
+                    if(s[i]=='\n'||s[i]=='\r')consume_newline(s,n,&i,&line,&col);
+                    else{i++;col++;}
+                }
+            }
+            else{  /* line comment: skip to end of line, newline left to the main loop */
+                i+=cm.len;col+=(unsigned)cm.len;
+                while(i<n&&s[i]!='\n'&&s[i]!='\r'){i++;col++;}
+            }
+            continue;
         }
         size_t st=i;unsigned sl=line,sc=col;
         if(c=='\''||c=='"'){STok tok={0};if(!lex_short_string(file,s,n,&i,&line,&col,&tok,err))return 0;tokpush(out,tok);continue;}

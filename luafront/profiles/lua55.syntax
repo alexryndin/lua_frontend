@@ -1,6 +1,8 @@
 profile lua55;
 version "5.5.0";
 contextual "global";
+line_comment "--";
+lua_long_comment "--";
 
 rule chunk = block:body EOF => Chunk(body);
 rule repl_expr = exp:value EOF => Chunk(Block(Return(ExprList(value))));

@@ -8,6 +8,8 @@ static const char *const builtin_lua55_chunks[] = {
     "profile lua55;\n",
     "version \"5.5.0\";\n",
     "contextual \"global\";\n",
+    "line_comment \"--\";\n",
+    "lua_long_comment \"--\";\n",
     "\n",
     "rule chunk = block:body EOF => Chunk(body);\n",
     "rule repl_expr = exp:value EOF => Chunk(Block(Return(ExprList(value))));\n",

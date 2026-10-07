@@ -1,4 +1,4 @@
-# Implementation status — 1.0.0
+# Implementation status — 1.0.1
 
 ## Release status
 
@@ -52,8 +52,9 @@ compiler/runtime with a configurable source frontend installed at the normal
 
 ### Interpreter and tooling
 
-- PUC-compatible `lua` command line with `--syntax` and `--native` extensions;
-- profile-aware multiline REPL and expression shorthand;
+- byte-identical upstream PUC Lua `lua.c`, compiled unchanged except for symbol aliases;
+- small launcher/state adapter for `--syntax` and `--native`;
+- stock PUC multiline REPL with profile-driven expression shorthand at the compiler hook;
 - strict profile search/discovery with builtin fallback;
 - `luafront` AST/token inspection utility;
 - `luax` differential/development runner;
@@ -74,7 +75,7 @@ Passing gates:
 - official Lua 5.5 corpus differential: 35/35 source files compile in both
   native and configurable paths and produce identical stripped bytecode.
 
-See `docs/VERIFICATION-1.0.0.md` for the release record.
+See `docs/VERIFICATION-1.0.1.md` for the current release record.
 
 ## Baseline
 

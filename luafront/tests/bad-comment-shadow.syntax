@@ -1,0 +1,16 @@
+profile tinyshadow;
+version "1.0";
+line_comment "//";
+
+rule chunk = block:body EOF => Chunk(body);
+rule block = { stat:items } => Block(items);
+rule stat = local_decl | return_stat;
+rule local_decl = "let" NAME:name "=" exp:value ";" => Local(DeclList(DeclName(name)), ExprList(value));
+rule return_stat = "return" exp:value ";" => Return(ExprList(value));
+rule exp = add_expr:value => Pass(value);
+rule add_expr = primary:first { add_tail:rest } => Fold(first, rest);
+rule add_tail = "+":op primary:value => Tail(op, value);
+rule primary = name_expr | number_expr;
+rule name_expr = NAME:value => Pass(value);
+rule number_expr = NUMBER:value => Pass(value);
+rule triplex = "///" NAME:n => Pass(n);

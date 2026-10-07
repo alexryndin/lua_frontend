@@ -88,6 +88,20 @@ grep -q '3' "$tmp/repl.out"
 grep -q '8' "$tmp/repl.out"
 [ ! -s "$tmp/repl.err" ]
 
+# The PUC REPL itself remains unmodified: expression shorthand is supplied by
+# the compiler hook even for a profile that has no surface `return` keyword.
+printf '1 + 2\n' \
+  | "$lua" --syntax "$root/tests/repl-expression.syntax" -i \
+      >"$tmp/repl-noreturn.out" 2>"$tmp/repl-noreturn.err"
+grep -q '3' "$tmp/repl-noreturn.out"
+[ ! -s "$tmp/repl-noreturn.err" ]
+
+# Line comments are ordinary trivia in the REPL as well.
+printf '1 + 2 // repl note\n' \
+  | "$lua" --syntax "$js" -i >"$tmp/repl-comment.out" 2>"$tmp/repl-comment.err"
+grep -q '3' "$tmp/repl-comment.out"
+[ ! -s "$tmp/repl-comment.err" ]
+
 printf 'function unfinished(x) {\n' \
   | "$lua" --syntax "$js" -i >"$tmp/incomplete.out" 2>"$tmp/incomplete.err"
 grep -q "expected } near '<eof>'" "$tmp/incomplete.err"

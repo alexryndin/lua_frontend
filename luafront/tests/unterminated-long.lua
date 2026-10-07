@@ -1,0 +1,3 @@
+local x = 1;
+--[[ never closed
+still open
