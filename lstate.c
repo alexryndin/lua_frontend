@@ -356,6 +356,8 @@ LUA_API lua_State *lua_newstate (lua_Alloc f, void *ud, unsigned seed) {
   g->ud = ud;
   g->warnf = NULL;
   g->ud_warn = NULL;
+  g->sourcecompiler = NULL;
+  g->ud_sourcecompiler = NULL;
   g->seed = seed;
   g->gcstp = GCSTPGC;  /* no GC while building state */
   g->strt.size = g->strt.nuse = 0;

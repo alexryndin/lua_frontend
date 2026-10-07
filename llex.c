@@ -180,6 +180,36 @@ void luaX_setinput (lua_State *L, LexState *ls, ZIO *z, TString *source,
   ls->current = firstchar;
   ls->lookahead.token = TK_EOS;  /* no look-ahead token */
   ls->z = z;
+  ls->tokenreader = NULL;
+  ls->tokenreader_ud = NULL;
+  ls->fs = NULL;
+  ls->linenumber = 1;
+  ls->lastline = 1;
+  ls->source = source;
+  /* all three strings here ("_ENV", "break", "global") were fixed,
+     so they cannot be collected */
+  ls->envn = luaS_newliteral(L, LUA_ENV);  /* get env string */
+  ls->brkn = luaS_newliteral(L, "break");  /* get "break" string */
+#if LUA_COMPAT_GLOBAL
+  /* compatibility mode: "global" is not a reserved word */
+  ls->glbn = luaS_newliteral(L, "global");  /* get "global" string */
+  ls->glbn->extra = 0;  /* mark it as not reserved */
+#endif
+  luaZ_resizebuffer(ls->L, ls->buff, LUA_MINBUFFER);  /* initialize buffer */
+}
+
+
+
+void luaX_settokeninput (lua_State *L, LexState *ls, TString *source,
+                         luaX_TokenReader reader, void *ud) {
+  lua_assert(reader != NULL);
+  ls->t.token = 0;
+  ls->L = L;
+  ls->current = EOZ;
+  ls->lookahead.token = TK_EOS;  /* no look-ahead token */
+  ls->z = NULL;
+  ls->tokenreader = reader;
+  ls->tokenreader_ud = ud;
   ls->fs = NULL;
   ls->linenumber = 1;
   ls->lastline = 1;
@@ -591,6 +621,8 @@ void luaX_next (LexState *ls) {
     ls->t = ls->lookahead;  /* use this one */
     ls->lookahead.token = TK_EOS;  /* and discharge it */
   }
+  else if (ls->tokenreader != NULL)
+    ls->t.token = ls->tokenreader(ls, ls->tokenreader_ud, &ls->t.seminfo);
   else
     ls->t.token = llex(ls, &ls->t.seminfo);  /* read next token */
 }
@@ -598,7 +630,11 @@ void luaX_next (LexState *ls) {
 
 int luaX_lookahead (LexState *ls) {
   lua_assert(ls->lookahead.token == TK_EOS);
-  ls->lookahead.token = llex(ls, &ls->lookahead.seminfo);
+  if (ls->tokenreader != NULL)
+    ls->lookahead.token = ls->tokenreader(ls, ls->tokenreader_ud,
+                                          &ls->lookahead.seminfo);
+  else
+    ls->lookahead.token = llex(ls, &ls->lookahead.seminfo);
   return ls->lookahead.token;
 }
 

@@ -10,6 +10,7 @@
 
 #include "llimits.h"
 #include "lobject.h"
+#include "llex.h"
 #include "lstate.h"
 #include "lzio.h"
 
@@ -72,6 +73,9 @@ LUAI_FUNC void luaD_seterrorobj (lua_State *L, TStatus errcode, StkId oldtop);
 LUAI_FUNC TStatus luaD_protectedparser (lua_State *L, ZIO *z,
                                                   const char *name,
                                                   const char *mode);
+LUAI_FUNC TStatus luaD_protectedtokenparser (lua_State *L, const char *name,
+                                                  luaX_TokenReader reader,
+                                                  void *ud);
 LUAI_FUNC void luaD_hook (lua_State *L, int event, int line,
                                         int fTransfer, int nTransfer);
 LUAI_FUNC void luaD_hookcall (lua_State *L, CallInfo *ci);

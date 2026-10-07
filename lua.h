@@ -116,6 +116,13 @@ typedef int (*lua_KFunction) (lua_State *L, int status, lua_KContext ctx);
 */
 typedef const char * (*lua_Reader) (lua_State *L, void *ud, size_t *sz);
 
+/* Optional per-state text-source compiler hook.  When installed, lua_load
+** delegates chunk compilation to it; binary chunks may be handled by the
+** hook through the normal internal undumper. */
+typedef int (*lua_SourceCompiler) (lua_State *L, lua_Reader reader, void *data,
+                                   const char *chunkname, const char *mode,
+                                   void *ud);
+
 typedef int (*lua_Writer) (lua_State *L, const void *p, size_t sz, void *ud);
 
 
@@ -300,6 +307,8 @@ LUA_API int   (lua_pcallk) (lua_State *L, int nargs, int nresults, int errfunc,
 
 LUA_API int   (lua_load) (lua_State *L, lua_Reader reader, void *dt,
                           const char *chunkname, const char *mode);
+LUA_API void  (lua_setsourcecompiler) (lua_State *L,
+                          lua_SourceCompiler compiler, void *ud);
 
 LUA_API int (lua_dump) (lua_State *L, lua_Writer writer, void *data, int strip);
 
