@@ -5,6 +5,7 @@
 #include "llex.h"
 #include "lobject.h"
 #include "lzio.h"
+#include "lauxlib.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -168,7 +169,9 @@ int lf_lua_loadrepl(lua_State *L, LF_Profile *profile,
 }
 
 typedef struct {
-    LF_Profile *profile;
+    LF_Profile *profile;        /* resolved profile */
+    LF_ProfileRegistry *registry;
+    const lua_SourceInfo *info;
     lua_Reader reader;
     void *reader_data;
     const char *chunkname;
@@ -200,6 +203,356 @@ static const char *one_reader(lua_State *L, void *ud, size_t *sz) {
     r->sent=1; *sz=r->n; return r->p;
 }
 
+/* ---- profile registry and per-source-unit resolution ---- */
+
+#define LF_REGISTRY_MAGIC 0x4c465245  /* "LFRE" */
+
+static char lf_registry_key;  /* static address: registry-table key */
+
+static int source_compiler_hook(lua_State *L, lua_Reader reader, void *data,
+                                const char *chunkname, const char *mode,
+                                const lua_SourceInfo *info, void *ud);
+
+static char *dup_str(const char *s) {
+    size_t n = strlen(s);
+    char *p = (char *)malloc(n + 1);
+    if (!p) abort();
+    memcpy(p, s, n + 1);
+    return p;
+}
+
+typedef struct {
+    char *ext;
+    char *name;    /* declared profile name */
+    char *path;
+    LF_Profile *profile;  /* lazily loaded */
+} RegistryEntry;
+
+struct LF_ProfileRegistry {
+    int magic;
+    LF_Profile *override_all;   /* legacy single-profile install; NOT owned */
+    LF_Profile *builtin;        /* owned builtin lua55 */
+    LF_Profile *entry_override; /* owned; may be NULL */
+    RegistryEntry *entries;
+    size_t nentries, capentries;
+};
+
+static void trace_resolution(const char *chunkname, const lua_SourceInfo *info,
+                             const char *pname, const char *reason) {
+    const char *origin = (info && info->origin == LUA_SOURCE_FILE) ? "file" : "nonfile";
+    const char *role = "dynamic";
+    switch (info ? info->role : LUA_ROLE_DYNAMIC) {
+        case LUA_ROLE_ENTRY: role = "entry"; break;
+        case LUA_ROLE_MODULE: role = "module"; break;
+        case LUA_ROLE_LUAINIT: role = "luainit"; break;
+        default: break;
+    }
+    fprintf(stderr, "[syntax] %s\n         origin=%s role=%s\n"
+                    "         profile=%s reason=%s\n",
+            chunkname, origin, role, pname, reason);
+}
+
+static int trace_enabled(void) {
+    const char *x = getenv("LF_SYNTAX_TRACE");
+    return x && *x && strcmp(x, "0") != 0;
+}
+
+static void err_set(char *err, size_t errlen, const char *msg) {
+    if (errlen == 0) return;
+    size_t n = strlen(msg);
+    if (n >= errlen) n = errlen - 1;
+    memcpy(err, msg, n);
+    err[n] = '\0';
+}
+
+/* Load a lazy map entry (first use).  Returns NULL and fills 'err' on
+** failure; the declared profile name must match the map's name. */
+static LF_Profile *entry_load(RegistryEntry *e, char *err, size_t errlen) {
+    if (e->profile) return e->profile;
+    char msg[768];
+    LF_Error fe = {0};
+    LF_Profile *p = lf_profile_load(e->path, &fe);
+    if (!p) {
+        snprintf(msg, sizeof(msg), "cannot load syntax profile '%s' for "
+                                   "extension '.%s' from %s: %s",
+                 e->name, e->ext, e->path,
+                 fe.message[0] ? fe.message : "profile load failed");
+        err_set(err, errlen, msg);
+        return NULL;
+    }
+    const char *declared = lf_profile_name(p);
+    if (!declared || strcmp(declared, e->name) != 0) {
+        snprintf(msg, sizeof(msg), "syntax profile %s declares itself '%s' "
+                                   "but is mapped as '%s'", e->path,
+                 declared ? declared : "?", e->name);
+        err_set(err, errlen, msg);
+        lf_profile_free(p);
+        return NULL;
+    }
+    e->profile = p;
+    return p;
+}
+
+/* The resolver: explicit-all (legacy install) -> entry override -> extension
+** map (real FILE paths only) -> builtin for .lua -> builtin default.
+** Neither chunkname nor profile-file basenames participate. */
+static LF_Profile *resolve_profile(LF_ProfileRegistry *r,
+                                   const lua_SourceInfo *info,
+                                   const char **reason, char *err,
+                                   size_t errlen) {
+    if (r->override_all) {
+        *reason = "explicit-all";
+        return r->override_all;
+    }
+    if (info && info->role == LUA_ROLE_ENTRY && r->entry_override) {
+        *reason = "entry-override";
+        return r->entry_override;
+    }
+    if (info && info->origin == LUA_SOURCE_FILE && info->path) {
+        const char *ext = strrchr(info->path, '.');
+        if (ext && ext[1]) {
+            ext++;
+            for (size_t i = 0; i < r->nentries; i++) {
+                if (strcmp(r->entries[i].ext, ext) == 0) {
+                    LF_Profile *p = entry_load(&r->entries[i], err, errlen);
+                    if (!p) return NULL;
+                    *reason = "extension-map";
+                    return p;
+                }
+            }
+            if (strcmp(ext, "lua") == 0) {
+                *reason = "builtin-.lua";
+                return r->builtin;
+            }
+        }
+    }
+    *reason = "state-default";
+    return r->builtin;
+}
+
+/* Registry lookup by declared name for syntax.load / lf_lua_loadsyntax:
+** "lua55" resolves to the builtin instance, other names to map entries. */
+static LF_Profile *registry_find(LF_ProfileRegistry *r, const char *name,
+                                 char *err, size_t errlen) {
+    if (strcmp(name, "lua55") == 0) return r->builtin;
+    for (size_t i = 0; i < r->nentries; i++) {
+        if (strcmp(r->entries[i].name, name) == 0)
+            return entry_load(&r->entries[i], err, errlen);
+    }
+    if (r->override_all && strcmp(lf_profile_name(r->override_all), name) == 0)
+        return r->override_all;
+    if (r->entry_override && strcmp(lf_profile_name(r->entry_override), name) == 0)
+        return r->entry_override;
+    snprintf(err, errlen, "no syntax profile '%s' in registry", name);
+    return NULL;
+}
+
+static int registry_gc(lua_State *L) {
+    LF_ProfileRegistry *r = (LF_ProfileRegistry *)lua_touserdata(L, 1);
+    if (!r || r->magic != LF_REGISTRY_MAGIC) return 0;
+    if (r->builtin) lf_profile_free(r->builtin);
+    if (r->entry_override) lf_profile_free(r->entry_override);
+    for (size_t i = 0; i < r->nentries; i++) {
+        free(r->entries[i].ext);
+        free(r->entries[i].name);
+        free(r->entries[i].path);
+        if (r->entries[i].profile) lf_profile_free(r->entries[i].profile);
+    }
+    free(r->entries);
+    /* override_all is not owned by the registry (legacy API contract) */
+    return 0;
+}
+
+static LF_ProfileRegistry *registry_new(lua_State *L) {
+    LF_ProfileRegistry *r = (LF_ProfileRegistry *)lua_newuserdatauv(L,
+                                        sizeof(LF_ProfileRegistry), 0);
+    memset(r, 0, sizeof(*r));
+    r->magic = LF_REGISTRY_MAGIC;
+    if (luaL_newmetatable(L, "luafront.registry")) {
+        lua_pushcfunction(L, registry_gc);
+        lua_setfield(L, -2, "__gc");
+    }
+    lua_setmetatable(L, -2);
+    return r;  /* on stack top */
+}
+
+static void registry_store_ref(lua_State *L) {
+    /* registry userdata is on stack top; keep it findable for C lookups */
+    lua_pushlightuserdata(L, (void *)&lf_registry_key);
+    lua_pushvalue(L, -2);
+    lua_settable(L, LUA_REGISTRYINDEX);
+}
+
+static int registry_add_entry(LF_ProfileRegistry *r, const char *ext,
+                              const char *name, const char *path, char *err,
+                              size_t errlen) {
+    if (strcmp(name, "lua55") == 0) {
+        snprintf(err, errlen, "syntax profile name 'lua55' is reserved "
+                              "for the builtin profile");
+        return 0;
+    }
+    if (strcmp(ext, "lua") == 0) {
+        snprintf(err, errlen, "extension 'lua' is reserved for builtin lua55");
+        return 0;
+    }
+    for (size_t i = 0; i < r->nentries; i++) {
+        if (strcmp(r->entries[i].ext, ext) == 0) {
+            snprintf(err, errlen, "duplicate syntax mapping for extension '.%s'",
+                     ext);
+            return 0;
+        }
+        if (strcmp(r->entries[i].name, name) == 0 &&
+            strcmp(r->entries[i].path, path) != 0) {
+            snprintf(err, errlen, "syntax profile name '%s' mapped to two "
+                                  "different files: %s and %s",
+                     name, r->entries[i].path, path);
+            return 0;
+        }
+    }
+    if (r->nentries == r->capentries) {
+        r->capentries = r->capentries ? r->capentries * 2 : 8;
+        r->entries = (RegistryEntry *)realloc(r->entries,
+                          r->capentries * sizeof(*r->entries));
+        if (!r->entries) abort();
+    }
+    RegistryEntry *e = &r->entries[r->nentries++];
+    e->ext = dup_str(ext);
+    e->name = dup_str(name);
+    e->path = dup_str(path);
+    e->profile = NULL;
+    return 1;
+}
+
+static void install_syntax_preload(lua_State *L) {
+    /* registry userdata is on stack top */
+    luaL_getsubtable(L, LUA_REGISTRYINDEX, LUA_PRELOAD_TABLE);
+    lua_pushvalue(L, -2);  /* copy registry userdata as upvalue */
+    lua_pushcclosure(L, luaopen_syntax, 1);
+    lua_setfield(L, -2, "syntax");
+    lua_pop(L, 1);  /* _PRELOAD */
+}
+
+int lf_lua_attach_registry(lua_State *L, const LF_RegistryConfig *cfg,
+                           char *err, size_t errlen) {
+    LF_Error fe = {0};
+    LF_ProfileRegistry *r = registry_new(L);  /* userdata on top */
+    r->builtin = lf_profile_builtin_lua55(&fe);
+    if (!r->builtin) {
+        snprintf(err, errlen, "cannot build builtin lua55 profile: %s",
+                 fe.message[0] ? fe.message : "internal error");
+        return 1;
+    }
+    if (cfg) {
+        r->entry_override = cfg->entry_profile;  /* ownership transferred */
+        for (size_t i = 0; i < cfg->nmaps; i++) {
+            if (!registry_add_entry(r, cfg->maps[i].ext, cfg->maps[i].name,
+                                    cfg->maps[i].path, err, errlen))
+                return 1;
+        }
+    }
+    install_syntax_preload(L);
+    registry_store_ref(L);
+    lua_setsourcecompiler(L, source_compiler_hook, r);
+    lua_pop(L, 1);  /* registry userdata */
+    return 0;
+}
+
+LF_ProfileRegistry *lf_lua_get_registry(lua_State *L) {
+    lua_pushlightuserdata(L, (void *)&lf_registry_key);
+    lua_gettable(L, LUA_REGISTRYINDEX);
+    if (!lua_isuserdata(L, -1)) {
+        lua_pop(L, 1);
+        return NULL;
+    }
+    LF_ProfileRegistry *r = (LF_ProfileRegistry *)lua_touserdata(L, -1);
+    lua_pop(L, 1);
+    if (!r || r->magic != LF_REGISTRY_MAGIC) return NULL;
+    return r;
+}
+
+int lf_lua_loadsyntax(lua_State *L, const char *name, const char *chunkname,
+                      const char *source, size_t len, const char *mode) {
+    char err[512];
+    LF_ProfileRegistry *r = lf_lua_get_registry(L);
+    if (!r) {
+        lua_pushstring(L, "no syntax registry attached to this state");
+        return LUA_ERRSYNTAX;
+    }
+    LF_Profile *p = registry_find(r, name, err, sizeof(err));
+    if (!p) {
+        lua_pushstring(L, err);
+        return LUA_ERRSYNTAX;
+    }
+    if (mode && strchr(mode, 't') == NULL) {
+        lua_pushfstring(L, "attempt to load a text chunk (mode is '%s')", mode);
+        return LUA_ERRSYNTAX;
+    }
+    return lf_lua_loadsource(L, p, chunkname, source, len, NULL);
+}
+
+/* ---- the "syntax" library ---- */
+
+static int syntax_load(lua_State *L) {
+    /* upvalue 1: registry userdata */
+    size_t len;
+    const char *src = luaL_checklstring(L, 1, &len);
+    const char *name = luaL_checkstring(L, 2);
+    const char *chunkname = luaL_optstring(L, 3, "=(syntax)");
+    const char *mode = luaL_optstring(L, 4, "bt");
+    int hasenv = !lua_isnoneornil(L, 5);
+    char err[512];
+    LF_ProfileRegistry *r = (LF_ProfileRegistry *)lua_touserdata(L,
+                                        lua_upvalueindex(1));
+    if (!r || r->magic != LF_REGISTRY_MAGIC)
+        return luaL_error(L, "syntax library used without a registry");
+    LF_Profile *p = registry_find(r, name, err, sizeof(err));
+    if (!p) {
+        lua_pushnil(L);
+        lua_pushstring(L, err);
+        return 2;
+    }
+    if (strchr(mode, 't') == NULL) {
+        lua_pushnil(L);
+        lua_pushfstring(L, "attempt to load a text chunk (mode is '%s')", mode);
+        return 2;
+    }
+    LF_Error fe = {0};
+    LF_Ast *ast = lf_parse(p, chunkname, src, len, &fe);
+    if (!ast) {
+        lua_pushnil(L);
+        if (fe.span.line_start)
+            lua_pushfstring(L, "%s:%d:%d: %s", chunkname,
+                            (int)fe.span.line_start, (int)fe.span.col_start,
+                            fe.message[0] ? fe.message : "parse failed");
+        else
+            lua_pushstring(L, fe.message[0] ? fe.message : "parse failed");
+        return 2;
+    }
+    int status = compile_ast_raw(L, ast, chunkname, &fe);
+    lf_ast_free(ast);
+    if (status != LUA_OK) {
+        /* error object is on the stack from the failed compile */
+        lua_pushnil(L);
+        lua_insert(L, -2);
+        return 2;
+    }
+    if (hasenv) {
+        lua_pushvalue(L, 5);
+        lua_setupvalue(L, -2, 1);
+    }
+    return 1;
+}
+
+int luaopen_syntax(lua_State *L) {
+    lua_newtable(L);
+    lua_pushvalue(L, lua_upvalueindex(1));
+    lua_pushcclosure(L, syntax_load, 1);
+    lua_setfield(L, -2, "load");
+    return 1;
+}
+
+/* ---- source compiler hook ---- */
+
 static void compile_hook_job(lua_State *L, void *ud) {
     HookJob *j=(HookJob *)ud;
     for (;;) {
@@ -213,6 +566,8 @@ static void compile_hook_job(lua_State *L, void *ud) {
     }
     if (!j->buf) { j->buf=(char *)malloc(1); if(!j->buf) abort(); j->buf[0]='\0'; }
 
+    /* Binary chunks bypass profile RESOLUTION itself (not merely profile
+       parsing): a broken lazy map can never affect a binary load. */
     if (j->len > 0 && (unsigned char)j->buf[0] == (unsigned char)LUA_SIGNATURE[0]) {
         OneReader mr={j->buf,j->len,0};
         ZIO z;
@@ -226,6 +581,19 @@ static void compile_hook_job(lua_State *L, void *ud) {
         lua_pushfstring(L,"attempt to load a text chunk (mode is '%s')",j->mode);
         luaD_throw(L,LUA_ERRSYNTAX);
     }
+
+    /* resolve the syntax profile for THIS source unit */
+    char rerr[512] = {0};
+    const char *reason = "state-default";
+    j->profile = resolve_profile(j->registry, j->info, &reason,
+                                 rerr, sizeof(rerr));
+    if (!j->profile) {
+        lua_pushfstring(L, "%s: %s", j->chunkname, rerr);
+        luaD_throw(L, LUA_ERRSYNTAX);
+    }
+    if (trace_enabled())
+        trace_resolution(j->chunkname, j->info, lf_profile_name(j->profile),
+                         reason);
 
     LF_Error e={0};
 
@@ -256,13 +624,13 @@ static void compile_hook_job(lua_State *L, void *ud) {
     LF_Ast *ast=lf_parse(j->profile,j->chunkname,j->buf,j->len,&e);
     if (getenv("LF_TRACE") && j->len > 1000) fprintf(stderr,"[lf] parse done ast=%p\n",(void*)ast);
     if (!ast) {
-        /* For the reference Lua profile, keep PUC's user-visible syntax
-           diagnostics byte-compatible.  The configurable parser remains
-           authoritative for acceptance: if PUC unexpectedly accepts input
-           that our lua55 profile rejected, report the frontend mismatch
-           instead of silently accepting it. */
-        const char *pname=lf_profile_name(j->profile);
-        if (pname && strcmp(pname,"lua55")==0) {
+        /* For the trusted builtin Lua profile, keep PUC's user-visible
+           syntax diagnostics byte-compatible.  The configurable parser
+           remains authoritative for acceptance: if PUC unexpectedly accepts
+           input that our builtin profile rejected, report the frontend
+           mismatch instead of silently accepting it.  This is an instance
+           property, not a profile-name check. */
+        if (lf_profile_native_diag(j->profile)) {
             OneReader mr={j->buf,j->len,0};
             ZIO z;
             luaZ_init(L,&z,one_reader,&mr);
@@ -297,9 +665,10 @@ static void compile_hook_job(lua_State *L, void *ud) {
 
 static int source_compiler_hook(lua_State *L, lua_Reader reader, void *data,
                                 const char *chunkname, const char *mode,
-                                void *ud) {
+                                const lua_SourceInfo *info, void *ud) {
     HookJob job={0};
-    job.profile=(LF_Profile *)ud;
+    job.registry=(LF_ProfileRegistry *)ud;
+    job.info=info;
     job.reader=reader; job.reader_data=data;
     job.chunkname=chunkname?chunkname:"?"; job.mode=mode;
     ptrdiff_t oldtop=savestack(L,L->top.p);
@@ -309,7 +678,18 @@ static int source_compiler_hook(lua_State *L, lua_Reader reader, void *data,
 }
 
 void lf_lua_install_profile(lua_State *L, LF_Profile *profile) {
-    lua_setsourcecompiler(L, profile ? source_compiler_hook : NULL, profile);
+    /* Legacy single-profile API: a registry whose resolver always returns
+       the given profile.  The profile stays owned by the caller. */
+    if (profile == NULL) {
+        lua_setsourcecompiler(L, NULL, NULL);
+        return;
+    }
+    LF_ProfileRegistry *r = registry_new(L);  /* userdata on top */
+    r->override_all = profile;
+    /* no syntax preload for the legacy API: no registry-managed names */
+    registry_store_ref(L);
+    lua_setsourcecompiler(L, source_compiler_hook, r);
+    lua_pop(L, 1);
 }
 
 void lf_lua_uninstall_profile(lua_State *L) {

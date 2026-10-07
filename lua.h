@@ -116,12 +116,31 @@ typedef int (*lua_KFunction) (lua_State *L, int status, lua_KContext ctx);
 */
 typedef const char * (*lua_Reader) (lua_State *L, void *ud, size_t *sz);
 
+/* Metadata describing where a text chunk comes from and why it is being
+** loaded.  'origin' distinguishes real files from everything else; 'path'
+** is the actual file path (NULL unless origin is LUA_SOURCE_FILE) and is
+** independent of the display-only 'chunkname'.  'role' says which part of
+** the system requested the load (command-line entry point, module system,
+** LUA_INIT, or an ordinary dynamic load). */
+#define LUA_SOURCE_FILE		0
+#define LUA_SOURCE_NONFILE	1
+#define LUA_ROLE_ENTRY		0
+#define LUA_ROLE_MODULE		1
+#define LUA_ROLE_LUAINIT	2
+#define LUA_ROLE_DYNAMIC	3
+
+typedef struct {
+  int origin;  /* LUA_SOURCE_FILE or LUA_SOURCE_NONFILE */
+  int role;    /* LUA_ROLE_* */
+  const char *path;  /* real path, only for LUA_SOURCE_FILE */
+} lua_SourceInfo;
+
 /* Optional per-state text-source compiler hook.  When installed, lua_load
 ** delegates chunk compilation to it; binary chunks may be handled by the
 ** hook through the normal internal undumper. */
 typedef int (*lua_SourceCompiler) (lua_State *L, lua_Reader reader, void *data,
                                    const char *chunkname, const char *mode,
-                                   void *ud);
+                                   const lua_SourceInfo *info, void *ud);
 
 typedef int (*lua_Writer) (lua_State *L, const void *p, size_t sz, void *ud);
 
@@ -307,6 +326,9 @@ LUA_API int   (lua_pcallk) (lua_State *L, int nargs, int nresults, int errfunc,
 
 LUA_API int   (lua_load) (lua_State *L, lua_Reader reader, void *dt,
                           const char *chunkname, const char *mode);
+LUA_API int   (lua_load_source) (lua_State *L, lua_Reader reader, void *dt,
+                          const char *chunkname, const char *mode,
+                          const lua_SourceInfo *info);
 LUA_API void  (lua_setsourcecompiler) (lua_State *L,
                           lua_SourceCompiler compiler, void *ud);
 

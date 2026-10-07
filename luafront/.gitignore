@@ -3,3 +3,4 @@
 /libluafront-lua.a
 /src/*.o
 /obj/
+/build/

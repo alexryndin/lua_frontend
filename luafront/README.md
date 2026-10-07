@@ -91,16 +91,16 @@ The normal Lua options remain available:
 -
 ```
 
-The selected profile applies consistently to:
+The selected profile applies to ENTRY source units only:
 
 - the main script;
 - `-e` chunks;
-- `LUA_INIT_5_5` / `LUA_INIT`;
 - interactive REPL input;
-- `load`;
-- `loadfile`;
-- `dofile`;
-- Lua modules loaded by `require`.
+- stdin.
+
+`LUA_INIT`, `load`, `loadfile`, `dofile` and `require`d modules resolve
+their own profiles (see [Per-source-unit profiles](#per-source-unit-profiles)):
+`.lua` files and string `load()` behave exactly like stock Lua 5.5.
 
 Binary chunks always bypass the configurable source frontend and go directly
 to PUC's binary undumper.  `load(..., "b")` / `load(..., "t")` mode checks and
@@ -112,26 +112,69 @@ the profile's optional `repl_expr` rule.  Incomplete frontend input is reported
 with PUC's `<eof>` convention, so upstream multiline REPL handling remains
 unchanged and no surface-language keyword is hard-coded into `lua.c`.
 
-## Profile discovery
+## Per-source-unit profiles
 
-Without `--syntax` or `--native`, the interpreter resolves a profile in this
-order:
+The syntax profile is a property of each source unit, not of the Lua state.
+One process can mix dialects freely:
 
-1. `LUA_SYNTAX`;
-2. `./.lua-syntax`;
-3. `$XDG_CONFIG_HOME/lua/syntax`;
-4. `$HOME/.config/lua/syntax`;
-5. `/etc/lua/syntax`;
-6. the embedded Lua 5.5 profile.
+```text
+main.ljs    -- jslike, via extension map
+foo.lua     -- lua55 (builtin), required from main.ljs
+bar.ljs     -- jslike module
+vendor.lua  -- lua55
+        ↓  all become ordinary Lua closures / bytecode in one Lua VM
+```
 
-An explicitly selected profile and `LUA_SYNTAX` are strict: if the selected
-file cannot be loaded or validated, startup fails instead of silently changing
-the language.
+`require`, function calls, tables, closures, coroutines and the C API know
+nothing about syntax profiles.  After compilation a profile stops existing
+as a meaningful entity; binary chunks bypass profile resolution entirely.
 
-`-E` ignores environment-driven selections (`LUA_SYNTAX`, XDG/HOME config and
-`LUA_INIT*`) just as it disables other Lua environment configuration.  An
-explicit `--syntax`, project `.lua-syntax`, system profile, or builtin profile
-can still be used.
+Each text load resolves a profile deterministically:
+
+1. explicit — `syntax.load(source, name)` / `lf_lua_loadsyntax`;
+2. entry override (`--syntax`, `LUA_SYNTAX`, `.lua-syntax`, user/system
+   config) — applies only to ENTRY units: the main script, `-e` chunks,
+   stdin and the REPL;
+3. extension map, for real FILE paths only (`loadfile`, `dofile`,
+   `require`);
+4. `*.lua` files use builtin lua55;
+5. everything else (string `load`, custom readers) uses builtin lua55.
+
+Neither chunknames nor profile-file basenames participate: `load(src,
+"@/x/f.ljs")` is a MEMORY source and compiles as Lua 5.5.  `LUA_INIT`
+never inherits the entry override, but FILE inits do go through the
+extension map.  Roles come from the call sites themselves, carried in
+`lua_SourceInfo` (see `docs/PUC_INTEGRATION.md`).
+
+### Extension maps
+
+```sh
+export LUA_PATH="./?.lua;./?.ljs"
+export LUA_SYNTAX_MAP="ljs=jslike:/path/jslike.syntax,moon=moon:/path/moon.syntax"
+lua main.ljs
+```
+
+- format: `ext=name:path`; the file must declare `profile name;` matching
+  the map (names are declared, never derived from basenames);
+- `lua --syntax-map ljs=jslike:/path/jslike.syntax` overrides env entries
+  per extension; `-E` ignores `LUA_SYNTAX_MAP`;
+- profiles load lazily on first use; a broken map entry is a strict load
+  error;
+- `lua55` and the `lua` extension are reserved for the builtin; the same
+  name may map several extensions only when the path is identical;
+- `LF_SYNTAX_TRACE=1` prints origin/role/profile/reason for every text
+  load.
+
+### The `syntax` library
+
+```lua
+local syntax = require("syntax")
+local f = syntax.load(src, "jslike")               -- like load, explicit profile
+local f = syntax.load(src, "jslike", "=gen", "t", env)
+local lua_f = syntax.load(src, "lua55")            -- builtin instance
+```
+
+`load()` itself is unchanged: `load(src)` always uses builtin lua55.
 
 ## Profile loading
 

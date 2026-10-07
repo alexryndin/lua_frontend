@@ -135,5 +135,7 @@ LF_Profile *lf_profile_builtin_lua55(LF_Error *err) {
     LF_Profile *profile = lf_profile_load_memory(
         "=(builtin lua55.syntax)", source, off, err);
     free(source);
+    if (profile != NULL)
+        lf_profile_set_native_diag(profile);  /* trusted builtin */
     return profile;
 }

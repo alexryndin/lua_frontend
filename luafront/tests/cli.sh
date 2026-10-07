@@ -28,7 +28,8 @@ print("dash-ok")
 EOF
 (cd "$tmp" && "$lua" -- -dash.lua) | grep -qx 'dash-ok'
 
-# The selected surface syntax applies to -e and LUA_INIT as well as files.
+# -e is an ENTRY unit and uses the selected syntax; LUA_INIT keeps its own
+# resolution (Lua by default, extension map for @files) either way.
 (
   unset LUA_INIT_5_5 LUA_INIT
   LUA_INIT='_G.initialized = 40;' \
@@ -76,9 +77,61 @@ if "$lua" --native --syntax "$js" -e 'print(1)' >"$tmp/conflict.out" 2>"$tmp/con
 fi
 grep -q 'usage:' "$tmp/conflict.err"
 
-# -l uses require and therefore inherits the active profile for Lua modules.
-LUA_PATH="$root/tests/?.lua;;" \
-  "$lua" --syntax "$js" -l M=jsmodule -e 'print(M.value);' | grep -qx '99'
+# require resolves each module by its own file extension, never by the
+# dialect of the importing unit: .ljs through the map, .lua stays Lua.
+mkdir -p "$tmp/mods"
+cp "$root/tests/jsmodule.ljs" "$tmp/mods/jsmodule.ljs"
+printf 'return {value = 7}\n' >"$tmp/mods/lmod.lua"
+LUA_PATH="$tmp/mods/?.lua;$tmp/mods/?.ljs" LUA_SYNTAX_MAP="ljs=jslike:$js" \
+  "$lua" --syntax "$js" -e 'let a = require("jsmodule"); let b = require("lmod"); print(a.value + b.value);' \
+  | grep -qx '106'
+
+# Extension maps apply to any FILE source unit, including LUA_INIT @files.
+printf 'print("init-js", 2 * 21);\n' >"$tmp/mods/init.ljs"
+(
+  unset LUA_INIT_5_5 LUA_INIT
+  LUA_INIT="@$tmp/mods/init.ljs" LUA_SYNTAX_MAP="ljs=jslike:$js" \
+    "$lua" -e 'print("main-ok")'
+) | grep -qx 'init-js	42
+main-ok'
+
+# -E ignores environment-driven syntax configuration, LUA_SYNTAX_MAP included.
+if LUA_SYNTAX_MAP="ljs=jslike:$js" LUA_INIT='error("LUA_INIT must be ignored")' \
+   "$lua" -E -e 'return 1' 2>"$tmp/e-map.err" >/dev/null; then
+  :  # -E succeeded; the map must NOT have registered, nothing to check here
+else
+  echo '-E unexpectedly failed' >&2
+  exit 1
+fi
+printf 'let x = 1;\n' >"$tmp/mods/plain.ljs"
+if LUA_SYNTAX_MAP="ljs=jslike:$js" "$lua" -E "$tmp/mods/plain.ljs" \
+    >"$tmp/e-map.out" 2>"$tmp/e-map.err"; then
+  echo '-E unexpectedly applied LUA_SYNTAX_MAP' >&2
+  exit 1
+fi
+
+# --syntax-map CLI entries override env entries for the same extension.
+printf 'let y = 2;\n' >"$tmp/mods/cli.ljs"
+LUA_SYNTAX_MAP="ljs=jslike:$tmp/definitely-missing.syntax" \
+  "$lua" --syntax-map "ljs=jslike:$js" "$tmp/mods/cli.ljs"
+
+# Reserved names and duplicate extensions are configuration errors.
+if "$lua" --syntax-map "lua=jslike:$js" -e 'print(1)' \
+    >"$tmp/res-ext.out" 2>"$tmp/res-ext.err"; then
+  echo "reserved extension 'lua' unexpectedly accepted" >&2
+  exit 1
+fi
+grep -q "reserved" "$tmp/res-ext.err"
+if "$lua" --syntax-map "ljs=lua55:$js" -e 'print(1)' \
+    >"$tmp/res-name.out" 2>"$tmp/res-name.err"; then
+  echo "reserved name 'lua55' unexpectedly accepted" >&2
+  exit 1
+fi
+if LUA_SYNTAX_MAP="ljs=jslike:$js,ljs=jslike:$js" "$lua" -e 'print(1)' \
+    >"$tmp/dup.out" 2>"$tmp/dup.err"; then
+  echo "duplicate extension mapping unexpectedly accepted" >&2
+  exit 1
+fi
 
 # Profile-aware REPL: expression shorthand, declarations, calls, multiline
 # blocks, and EOF while incomplete all use the selected grammar.

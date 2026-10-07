@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.3.0 — 2026-10-07
+
+- the syntax profile is now a property of each source unit, not of the
+  Lua state: one process mixes jslike/lua55 modules freely;
+- new `lua_SourceInfo` (origin/role/real path) flows from PUC call sites
+  (`lua_load_source`, `luaL_loadfilex_source`, `luaL_loadbufferx_source`);
+  roles are ENTRY/MODULE/LUA_INIT/DYNAMIC and never inferred from
+  chunknames;
+- `lua.c` stays byte-for-byte upstream: the CLI builds a generated copy
+  with `patches/lua-cli-sourceinfo.patch`, gated by `check-lua-overlay`;
+- resolver order: explicit -> entry override (ENTRY units only) ->
+  extension map (real FILE paths) -> builtin for .lua -> builtin default;
+- extension maps via `LUA_SYNTAX_MAP` / `--syntax-map ext=name:path`
+  (CLI wins, `-E` ignores the env, lazy loading, declared names, reserved
+  `lua55`/`lua`), plus `LF_SYNTAX_TRACE` resolution tracing;
+- new `syntax` library (`require("syntax").load(source, name, ...)`) and
+  C API `lf_lua_loadsyntax`;
+- `--syntax`, `LUA_SYNTAX`, `.lua-syntax` and user/system profiles now
+  select the ENTRY override only: `require`d `.lua` modules return to
+  Lua 5.5 (contract change; Lua-syntax modules and plain `load()` behave
+  exactly like stock Lua);
+- registry owns profiles for the state lifetime (Lua userdata, freed on
+  `lua_close`);
+- native PUC diagnostics are an instance property of the builtin lua55
+  profile, not of the profile name.
+
 ## 1.2.0 — 2026-10-07
 
 - removed the on-disk compiled-profile cache entirely: realistic profiles

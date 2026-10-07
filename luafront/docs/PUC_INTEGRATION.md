@@ -5,6 +5,28 @@ small frontend integration patch.  The PUC parser, semantic analysis, code
 generator and VM remain the authoritative Lua implementation.  The frontend
 itself lives in `luafront/` and builds against the repository root.
 
+## 0. Source metadata (per-unit syntax selection)
+
+Every text load carries `lua_SourceInfo` (origin FILE/NONFILE, role
+ENTRY/MODULE/LUA_INIT/DYNAMIC, real path) from the call site that knows why
+the chunk is being loaded:
+
+```text
+lua.h       lua_SourceInfo, role/origin constants
+lapi.c      lua_load_source; lua_load wraps it with DYNAMIC/NONFILE
+lauxlib.c   luaL_loadfilex_source / luaL_loadbufferx_source;
+            plain variants wrap with DYNAMIC (origin FILE iff filename)
+loadlib.c   require searcher marks MODULE
+```
+
+`lua.c` itself stays byte-for-byte upstream: the CLI compiles a generated
+copy with `luafront/patches/lua-cli-sourceinfo.patch`, which marks the
+entry/init call sites (dostring/-e, handle_script, REPL, handle_luainit).
+`make check-upstream` still verifies the pristine `lua.c`;
+`make check-lua-overlay` verifies the patch applies cleanly and carries
+exactly the expected role markers.  Roles are never inferred from
+chunknames.
+
 ## 1. Alternate lexical-token input
 
 The normal parser traditionally obtains tokens only by asking `llex.c` to scan

@@ -52,7 +52,12 @@ src/puc_bridge.o: src/%.o: src/%.c include/luafront.h include/luafront_lua.h
 src/lua_main.o src/lua_cli_ext.o: src/%.o: src/%.c src/lua_cli_ext.h include/luafront.h include/luafront_lua.h
 	$(CC) $(CPPFLAGS) $(LUA_CPPFLAGS) $(CFLAGS) -c -o $@ $<
 
-$(LUA_CLI_OBJ): ../lua.c src/lua_cli_ext.h | obj
+build/lua.c: ../lua.c patches/lua-cli-sourceinfo.patch
+	mkdir -p build
+	cp ../lua.c $@
+	patch -s -N --no-backup-if-mismatch -p1 -d build < patches/lua-cli-sourceinfo.patch
+
+$(LUA_CLI_OBJ): build/lua.c src/lua_cli_ext.h | obj
 	$(CC) $(CPPFLAGS) $(LUA_CPPFLAGS) $(LUA_CFLAGS) -Dmain=puc_lua_main \
 	      -DluaL_newstate=lf_cli_newstate -include src/lua_cli_ext.h -c -o $@ $<
 
@@ -71,7 +76,10 @@ check-generated:
 check-upstream:
 	./tools/check-upstream.py
 
-test: all check-generated check-upstream
+check-lua-overlay:
+	./tools/check-lua-overlay.sh
+
+test: all check-generated check-upstream check-lua-overlay
 	./tests/run.sh
 
 # Differential compiler gate against the official Lua test corpus.
@@ -86,6 +94,7 @@ strict:
 	$(MAKE) CFLAGS='$(STRICT_CFLAGS)' LUA_CFLAGS='$(STRICT_LUA_CFLAGS)' all
 	./tools/embed-profile.py --check
 	./tools/check-upstream.py
+	./tools/check-lua-overlay.sh
 	./tests/run.sh
 
 # Rebuild the complete frontend/backend with ASan+UBSan and run the normal gate.
@@ -93,6 +102,7 @@ sanitize:
 	$(MAKE) clean
 	$(MAKE) CFLAGS='$(SAN_CFLAGS)' LUA_CFLAGS='$(SAN_LUA_CFLAGS)' all
 	./tools/check-upstream.py
+	./tools/check-lua-overlay.sh
 	ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 UBSAN_OPTIONS=halt_on_error=1 API_SANITIZE_FLAGS='-fsanitize=address,undefined' ./tests/run.sh
 
 install: all
@@ -119,6 +129,6 @@ clean:
 	rm -f $(FRONT_OBJ) src/puc_bridge.o \
 	      src/lua_main.o src/lua_cli_ext.o \
 	      lua $(LIBFRONT) $(LIBFRONTLUA)
-	rm -rf obj
+	rm -rf obj build
 
-.PHONY: all test corpus strict sanitize clean install uninstall regen-profile check-generated check-upstream
+.PHONY: all test corpus strict sanitize clean install uninstall regen-profile check-generated check-upstream check-lua-overlay

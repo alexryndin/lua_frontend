@@ -21,8 +21,16 @@ fi
 # semantics/code generation. Source-line parity is tested separately by the
 # diagnostics/runtime suite, while custom syntax naturally has different text
 # positions from standard Lua.
-dumper='local f=assert(loadfile(os.getenv("LUAFRONT_CORPUS_FILE"))); io.stdout:write(string.dump(f,true))'
-checker='assert(loadfile(os.getenv("LUAFRONT_CORPUS_FILE")))'
+#
+# The native side uses loadfile with the compiler hook off.  The profile
+# side compiles the same source through an explicit registry profile:
+# --syntax selects the entry override, whose declared name is then used
+# with syntax.load so every chunk goes through the frontend deterministically.
+name=$(sed -n 's/^profile[[:space:]][[:space:]]*\([A-Za-z0-9_-]*\);.*/\1/p' "$profile" | head -1)
+[ -n "$name" ] || { echo "cannot determine profile name of $profile" >&2; exit 2; }
+
+dumper="local p=os.getenv(\"LUAFRONT_CORPUS_FILE\"); local fh=assert(io.open(p)); local s=fh:read('a'); fh:close(); if s:sub(1,1)=='#' then s=s:match('^#[^\n]*\n(.*)') or '' end; local fn=assert(require('syntax').load(s, \"$name\", \"@\"..p)); io.stdout:write(string.dump(fn,true))"
+checker="local p=os.getenv(\"LUAFRONT_CORPUS_FILE\"); local fh=assert(io.open(p)); local s=fh:read('a'); fh:close(); if s:sub(1,1)=='#' then s=s:match('^#[^\n]*\n(.*)') or '' end; assert(require('syntax').load(s, \"$name\", \"@\"..p))"
 
 ok=0
 for f in "$testes"/*.lua; do

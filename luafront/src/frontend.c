@@ -97,6 +97,10 @@ struct LF_Profile {
     /* configurable comment trivia; when comments_explicit is zero the lexer
        falls back to the built-in Lua comment set ('--' line + '--' long) */
     int comments_explicit;
+    /* trusted instance metadata: set only on the builtin lua55 instance
+       constructed by lf_profile_builtin_lua55().  Never derived from the
+       declared profile name and never serialized. */
+    int native_diag;
     char **line_comments;
     size_t nline_comments, capline_comments;
     BlockComment *block_comments;
@@ -535,6 +539,8 @@ void lf_profile_free(LF_Profile*p){if(!p)return;free(p->name);free(p->version);f
 const char*lf_profile_name(const LF_Profile*p){return p?p->name:NULL;}
 const char*lf_profile_version(const LF_Profile*p){return p?p->version:NULL;}
 size_t lf_profile_rule_count(const LF_Profile*p){return p?p->nrules:0;}
+void lf_profile_set_native_diag(LF_Profile*p){if(p)p->native_diag=1;}
+int lf_profile_native_diag(const LF_Profile*p){return p?p->native_diag:0;}
 
 /* ---------- source lexer ---------- */
 

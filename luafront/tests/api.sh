@@ -38,6 +38,44 @@ int main(void) {
 }
 EOF
 
+cat >"$tmp/loadsyn.c" <<'EOF'
+#include "luafront_lua.h"
+#include "lauxlib.h"
+
+#include <stdio.h>
+
+int main(int argc, char **argv) {
+    static const char src[] = "let v = 3; return v * 14;";
+    if (argc != 2) {
+        fprintf(stderr, "usage: %s PROFILE\n", argv[0]);
+        return 2;
+    }
+    LF_Error err = {0};
+    LF_Profile *profile = lf_profile_load(argv[1], &err);
+    if (profile == NULL) {
+        fprintf(stderr, "%s\n", err.message);
+        return 1;
+    }
+    lua_State *L = luaL_newstate();
+    if (L == NULL) return 1;
+    lf_lua_install_profile(L, profile);
+    if (lf_lua_loadsyntax(L, "jslike", "=loadsyntax", src,
+                          sizeof(src) - 1, NULL) != LUA_OK ||
+        lua_pcall(L, 0, 1, 0) != LUA_OK) {
+        fprintf(stderr, "%s\n", lua_tostring(L, -1));
+        lf_lua_uninstall_profile(L);
+        lf_profile_free(profile);
+        lua_close(L);
+        return 1;
+    }
+    printf("%lld\n", (long long)lua_tointeger(L, -1));
+    lf_lua_uninstall_profile(L);
+    lf_profile_free(profile);
+    lua_close(L);
+    return 0;
+}
+EOF
+
 cat >"$tmp/embed.c" <<'EOF'
 #include "luafront_lua.h"
 #include "lauxlib.h"
@@ -85,5 +123,9 @@ EOF
 "$cc" -std=c11 -Wall -Wextra -Werror -I"$root/include" -I"$root/.." \
   "$tmp/embed.c" "$root/libluafront-lua.a" $api_sanitize_flags -lm -ldl -o "$tmp/embed"
 "$tmp/embed" "$root/profiles/jslike.syntax" | grep -qx '42'
+
+"$cc" -std=c11 -Wall -Wextra -Werror -I"$root/include" -I"$root/.." \
+  "$tmp/loadsyn.c" "$root/libluafront-lua.a" $api_sanitize_flags -lm -ldl -o "$tmp/loadsyn"
+"$tmp/loadsyn" "$root/profiles/jslike.syntax" | grep -qx '42'
 
 echo 'public C API tests passed'

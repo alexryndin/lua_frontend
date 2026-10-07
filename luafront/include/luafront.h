@@ -49,6 +49,11 @@ LF_Profile *lf_profile_load(const char *path, LF_Error *err);
 LF_Profile *lf_profile_load_memory(const char *source_name, const char *source,
                                    size_t source_len, LF_Error *err);
 LF_Profile *lf_profile_builtin_lua55(LF_Error *err);
+/* Mark a profile as a trusted builtin instance (PUC-native diagnostics).
+   Not part of the profile DSL; intended for programmatic builtin profiles. */
+void lf_profile_set_native_diag(LF_Profile *p);
+/* Instance property of trusted builtin profiles (PUC-native diagnostics). */
+int lf_profile_native_diag(const LF_Profile *p);
 /* Resolve the active profile in this order: explicit path, LUA_SYNTAX,
    ./.lua-syntax, XDG/HOME user config, /etc/lua/syntax, builtin Lua 5.5.
    With noenv!=0, environment-based selections/config paths are skipped. */
