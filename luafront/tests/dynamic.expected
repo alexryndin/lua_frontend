@@ -1,0 +1,7 @@
+load	17
+loadfile-ok
+loadfile	19
+loadfile-ok
+dofile	19
+require	23
+binary	77

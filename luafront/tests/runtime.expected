@@ -1,0 +1,12 @@
+multret	1	2	3
+paren	1	nil	nil
+table-ret	3	1	2	3
+named-vararg	3	a	nil	c
+rec	40320
+upvalue	1	2	3
+method	17
+goto	3
+assoc	512.0	64.0	8	6
+global	15
+inside-close
+closed
