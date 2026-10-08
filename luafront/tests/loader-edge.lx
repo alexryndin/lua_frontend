@@ -1,0 +1,37 @@
+let env = { x: 40 };
+let ef = assert(load("return x + 2;", "=env", "t", env));
+assert(ef() == 42);
+
+let parts = { "return ", "40 + 2;" };
+let part_i = 0;
+function reader() {
+  part_i = part_i + 1;
+  return parts[part_i];
+}
+let rf = assert(load(reader, "=reader", "t"));
+assert(rf() == 42);
+
+function empty_reader() {
+  return "";
+}
+let emptyf = assert(load(empty_reader, "=empty-reader", "t"));
+assert(emptyf() == null);
+
+let text_as_binary = load("return 1;", "=text-as-binary", "b");
+assert(text_as_binary == null);
+
+let blob = string.dump(function() { return 77; });
+let binary_as_text = load(blob, "=binary-as-text", "t");
+assert(binary_as_text == null);
+let binary_ok = assert(load(blob, "=binary", "b"));
+assert(binary_ok() == 77);
+
+let path = os.tmpname();
+let out = assert(io.open(path, "wb"));
+out.write(out, blob);
+out.close(out);
+let file_binary = assert(loadfile(path, "b"));
+os.remove(path);
+assert(file_binary() == 77);
+
+print("loader-edge-ok");

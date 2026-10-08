@@ -1,0 +1,80 @@
+--- a/lua.c
++++ b/lua.c
+@@ -206,13 +206,13 @@
+ }
+ 
+ 
+-static int dofile (lua_State *L, const char *name) {
+-  return dochunk(L, luaL_loadfilex(L, name, "bt"));
+-}
+-
+-
+-static int dostring (lua_State *L, const char *s, const char *name) {
+-  return dochunk(L, luaL_loadbufferx(L, s, strlen(s), name, "t"));
++static int dofile (lua_State *L, const char *name, int role) {
++  return dochunk(L, luaL_loadfilex_source(L, name, "bt", role));
++}
++
++
++static int dostring (lua_State *L, const char *s, const char *name, int role) {
++  return dochunk(L, luaL_loadbufferx_source(L, s, strlen(s), name, "t", role));
+ }
+ 
+ 
+@@ -266,7 +266,7 @@
+   const char *fname = argv[0];
+   if (strcmp(fname, "-") == 0 && strcmp(argv[-1], "--") != 0)
+     fname = NULL;  /* stdin */
+-  status = luaL_loadfilex(L, fname, "bt");
++  status = luaL_loadfilex_source(L, fname, "bt", LUA_ROLE_ENTRY);
+   if (status == LUA_OK) {
+     int n = pushargs(L);  /* push arguments to script */
+     status = docall(L, n, LUA_MULTRET);
+@@ -366,7 +366,7 @@
+         if (*extra == '\0') extra = argv[++i];
+         lua_assert(extra != NULL);
+         status = (option == 'e')
+-                 ? dostring(L, extra, "=(command line)")
++                 ? dostring(L, extra, "=(command line)", LUA_ROLE_ENTRY)
+                  : dolibrary(L, extra);
+         if (status != LUA_OK) return 0;
+         break;
+@@ -398,9 +398,9 @@
+   }
+   if (init == NULL) return LUA_OK;
+   else if (init[0] == '@')
+-    return dofile(L, init+1);
++    return dofile(L, init+1, LUA_ROLE_LUAINIT);
+   else
+-    return dostring(L, init, name);
++    return dostring(L, init, name, LUA_ROLE_LUAINIT);
+ }
+ 
+ 
+@@ -609,7 +609,7 @@
+ static int addreturn (lua_State *L) {
+   const char *line = lua_tostring(L, -1);  /* original line */
+   const char *retline = lua_pushfstring(L, "return %s;", line);
+-  int status = luaL_loadbufferx(L, retline, strlen(retline), "=stdin", "t");
++  int status = luaL_loadbufferx_source(L, retline, strlen(retline), "=stdin", "t", LUA_ROLE_ENTRY);
+   if (status == LUA_OK)
+     lua_remove(L, -2);  /* remove modified line */
+   else
+@@ -640,7 +640,7 @@
+   const char *line = lua_tolstring(L, 1, &len);  /* get first line */
+   checklocal(line);
+   for (;;) {  /* repeat until gets a complete statement */
+-    int status = luaL_loadbufferx(L, line, len, "=stdin", "t");  /* try it */
++    int status = luaL_loadbufferx_source(L, line, len, "=stdin", "t", LUA_ROLE_ENTRY);  /* try it */
+     if (!incomplete(L, status) || !pushline(L, 0))
+       return status;  /* should not or cannot try to add continuation line */
+     lua_remove(L, -2);  /* remove error message (from incomplete line) */
+@@ -767,7 +767,7 @@
+       print_version();
+       doREPL(L);  /* do read-eval-print loop */
+     }
+-    else dofile(L, NULL);  /* executes stdin as a file */
++    else dofile(L, NULL, LUA_ROLE_ENTRY);  /* executes stdin as a file */
+   }
+   lua_pushboolean(L, 1);  /* signal no errors */
+   return 1;

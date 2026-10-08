@@ -59,6 +59,11 @@ typedef struct Token {
 } Token;
 
 
+struct LexState;
+typedef int (*luaX_TokenReader) (struct LexState *ls, void *ud,
+                                 SemInfo *seminfo);
+
+
 /* state of the scanner plus state of the parser when shared by all
    functions */
 typedef struct LexState {
@@ -77,12 +82,17 @@ typedef struct LexState {
   TString *envn;  /* environment variable name */
   TString *brkn;  /* "break" name (used as a label) */
   TString *glbn;  /* "global" name (when not a reserved word) */
+  luaX_TokenReader tokenreader;  /* optional canonical-token input */
+  void *tokenreader_ud;
 } LexState;
 
 
 LUAI_FUNC void luaX_init (lua_State *L);
 LUAI_FUNC void luaX_setinput (lua_State *L, LexState *ls, ZIO *z,
                               TString *source, int firstchar);
+LUAI_FUNC void luaX_settokeninput (lua_State *L, LexState *ls,
+                                   TString *source, luaX_TokenReader reader,
+                                   void *ud);
 LUAI_FUNC TString *luaX_newstring (LexState *ls, const char *str, size_t l);
 LUAI_FUNC void luaX_next (LexState *ls);
 LUAI_FUNC int luaX_lookahead (LexState *ls);

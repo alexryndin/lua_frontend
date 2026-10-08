@@ -1,0 +1,11 @@
+let f = require("syntax").load("let q = 16; return q + 1;", "jslike");
+print("load", f());
+let lf = loadfile("tests/dynamic-child.lx");
+print("loadfile", lf());
+print("dofile", dofile("tests/dynamic-child.lx"));
+package.path = "tests/?.lua;tests/?.ljs";
+let m = require("dynamic-module");
+print("require", m.answer);
+let blob = string.dump(function() { return 77; });
+let bf = load(blob);
+print("binary", bf());

@@ -9,6 +9,7 @@
 
 #include "llimits.h"
 #include "lobject.h"
+#include "llex.h"
 #include "lzio.h"
 
 
@@ -192,6 +193,10 @@ LUAI_FUNC void luaY_checklimit (FuncState *fs, int v, int l,
 LUAI_FUNC LClosure *luaY_parser (lua_State *L, ZIO *z, Table *anchor,
                                  Mbuffer *buff, Dyndata *dyd,
                                  const char *name, int firstchar);
+LUAI_FUNC LClosure *luaY_parser_tokens (lua_State *L, Table *anchor,
+                                 Mbuffer *buff, Dyndata *dyd,
+                                 const char *name,
+                                 luaX_TokenReader reader, void *ud);
 
 
 #endif

@@ -1,0 +1,11 @@
+profile repl_noreturn;
+
+# Deliberately contains no surface `return` token.  The stock PUC REPL still
+# probes `return <line>;`; the compiler hook must map that probe to repl_expr
+# without requiring the selected syntax to spell return that way.
+rule chunk = EOF => Chunk(Block());
+rule repl_expr = exp:value EOF => Chunk(Block(Return(ExprList(value))));
+rule exp = add:first { add_tail:rest } => Fold(first, rest);
+rule add_tail = "+":op primary:value => Tail(op, value);
+rule add = primary:value => Pass(value);
+rule primary = NUMBER:value => Pass(value);

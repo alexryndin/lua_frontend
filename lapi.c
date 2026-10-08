@@ -1117,15 +1117,22 @@ LUA_API int lua_pcallk (lua_State *L, int nargs, int nresults, int errfunc,
 }
 
 
-LUA_API int lua_load (lua_State *L, lua_Reader reader, void *data,
-                      const char *chunkname, const char *mode) {
+LUA_API int lua_load_source (lua_State *L, lua_Reader reader, void *data,
+                             const char *chunkname, const char *mode,
+                             const lua_SourceInfo *info) {
   ZIO z;
   TStatus status;
   lua_lock(L);
   luaC_checkGC(L);
   if (!chunkname) chunkname = "?";
-  luaZ_init(L, &z, reader, data);
-  status = luaD_protectedparser(L, &z, chunkname, mode);
+  if (G(L)->sourcecompiler != NULL)
+    status = cast(TStatus, G(L)->sourcecompiler(L, reader, data, chunkname,
+                                               mode, info,
+                                               G(L)->ud_sourcecompiler));
+  else {
+    luaZ_init(L, &z, reader, data);
+    status = luaD_protectedparser(L, &z, chunkname, mode);
+  }
   if (status == LUA_OK) {  /* no errors? */
     LClosure *f = clLvalue(s2v(L->top.p - 1));  /* get new function */
     if (f->nupvalues >= 1) {  /* does it have an upvalue? */
@@ -1139,6 +1146,23 @@ LUA_API int lua_load (lua_State *L, lua_Reader reader, void *data,
   }
   lua_unlock(L);
   return APIstatus(status);
+}
+
+
+LUA_API int lua_load (lua_State *L, lua_Reader reader, void *data,
+                      const char *chunkname, const char *mode) {
+  /* ordinary dynamic load: no file, caller-driven */
+  lua_SourceInfo info = {LUA_SOURCE_NONFILE, LUA_ROLE_DYNAMIC, NULL};
+  return lua_load_source(L, reader, data, chunkname, mode, &info);
+}
+
+
+LUA_API void lua_setsourcecompiler (lua_State *L, lua_SourceCompiler compiler,
+                                    void *ud) {
+  lua_lock(L);
+  G(L)->sourcecompiler = compiler;
+  G(L)->ud_sourcecompiler = ud;
+  lua_unlock(L);
 }
 
 

@@ -1110,6 +1110,8 @@ struct SParser {  /* data to 'f_parser' */
   Dyndata dyd;  /* dynamic structures used by the parser */
   const char *mode;
   const char *name;
+  luaX_TokenReader tokenreader;
+  void *tokenreader_ud;
 };
 
 
@@ -1136,8 +1138,12 @@ static void f_parser (lua_State *L, void *ud) {
   luaD_checkstack(L, 2);
   anchor = luaH_new(L);  /* create the anchor table */
   sethvalue2s(L, L->top.p++, anchor);  /* anchor the anchor table */
-  c = zgetc(p->z);  /* read first character */
-  if (c == LUA_SIGNATURE[0]) {
+  if (p->tokenreader != NULL) {
+    checkmode(L, mode, "text");
+    cl = luaY_parser_tokens(L, anchor, &p->buff, &p->dyd, p->name,
+                            p->tokenreader, p->tokenreader_ud);
+  }
+  else if ((c = zgetc(p->z)) == LUA_SIGNATURE[0]) {
     int fixed = 0;
     if (strchr(mode, 'B') != NULL)
       fixed = 1;
@@ -1176,6 +1182,28 @@ TStatus luaD_protectedparser (lua_State *L, ZIO *z, const char *name,
   TStatus status;
   incnny(L);  /* cannot yield during parsing */
   p.z = z; p.name = name; p.mode = mode;
+  p.tokenreader = NULL; p.tokenreader_ud = NULL;
+  p.dyd.actvar.arr = NULL; p.dyd.actvar.size = 0;
+  p.dyd.gt.arr = NULL; p.dyd.gt.size = 0;
+  p.dyd.label.arr = NULL; p.dyd.label.size = 0;
+  luaZ_initbuffer(L, &p.buff);
+  status = luaD_pcall(L, f_parser, &p, savestack(L, L->top.p), L->errfunc);
+  luaZ_freebuffer(L, &p.buff);
+  luaM_freearray(L, p.dyd.actvar.arr, cast_sizet(p.dyd.actvar.size));
+  luaM_freearray(L, p.dyd.gt.arr, cast_sizet(p.dyd.gt.size));
+  luaM_freearray(L, p.dyd.label.arr, cast_sizet(p.dyd.label.size));
+  decnny(L);
+  return status;
+}
+
+
+TStatus luaD_protectedtokenparser (lua_State *L, const char *name,
+                                   luaX_TokenReader reader, void *ud) {
+  struct SParser p;
+  TStatus status;
+  incnny(L);  /* cannot yield during parsing */
+  p.z = NULL; p.name = name; p.mode = "t";
+  p.tokenreader = reader; p.tokenreader_ud = ud;
   p.dyd.actvar.arr = NULL; p.dyd.actvar.size = 0;
   p.dyd.gt.arr = NULL; p.dyd.gt.size = 0;
   p.dyd.label.arr = NULL; p.dyd.label.size = 0;

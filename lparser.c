@@ -2168,8 +2168,10 @@ static void mainfunc (LexState *ls, FuncState *fs) {
 }
 
 
-LClosure *luaY_parser (lua_State *L, ZIO *z, Table *anchor, Mbuffer *buff,
-                       Dyndata *dyd, const char *name, int firstchar) {
+static LClosure *parserbody (lua_State *L, ZIO *z, Table *anchor,
+                             Mbuffer *buff, Dyndata *dyd, const char *name,
+                             int firstchar, luaX_TokenReader reader,
+                             void *ud) {
   LexState lexstate;
   FuncState funcstate;
   LClosure *cl;
@@ -2183,11 +2185,27 @@ LClosure *luaY_parser (lua_State *L, ZIO *z, Table *anchor, Mbuffer *buff,
   lexstate.buff = buff;
   lexstate.dyd = dyd;
   dyd->actvar.n = dyd->gt.n = dyd->label.n = 0;
-  luaX_setinput(L, &lexstate, z, funcstate.f->source, firstchar);
+  if (reader != NULL)
+    luaX_settokeninput(L, &lexstate, funcstate.f->source, reader, ud);
+  else
+    luaX_setinput(L, &lexstate, z, funcstate.f->source, firstchar);
   mainfunc(&lexstate, &funcstate);
   lua_assert(!funcstate.prev && funcstate.nups == 1 && !lexstate.fs);
   /* all scopes should be correctly finished */
   lua_assert(dyd->actvar.n == 0 && dyd->gt.n == 0 && dyd->label.n == 0);
   return cl;
+}
+
+
+LClosure *luaY_parser (lua_State *L, ZIO *z, Table *anchor, Mbuffer *buff,
+                       Dyndata *dyd, const char *name, int firstchar) {
+  return parserbody(L, z, anchor, buff, dyd, name, firstchar, NULL, NULL);
+}
+
+
+LClosure *luaY_parser_tokens (lua_State *L, Table *anchor, Mbuffer *buff,
+                              Dyndata *dyd, const char *name,
+                              luaX_TokenReader reader, void *ud) {
+  return parserbody(L, NULL, anchor, buff, dyd, name, EOZ, reader, ud);
 }
 

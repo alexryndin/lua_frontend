@@ -1,0 +1,2 @@
+profile bad;
+rule chunk = missing EOF => Chunk(missing);

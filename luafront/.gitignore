@@ -1,0 +1,6 @@
+/lua
+/libluafront.a
+/libluafront-lua.a
+/src/*.o
+/obj/
+/build/

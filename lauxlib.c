@@ -818,12 +818,16 @@ static int skipcomment (FILE *f, int *cp) {
 }
 
 
-LUALIB_API int luaL_loadfilex (lua_State *L, const char *filename,
-                                             const char *mode) {
+LUALIB_API int luaL_loadfilex_source (lua_State *L, const char *filename,
+                                              const char *mode, int role) {
   LoadF lf;
   int status, readstatus;
   int c;
+  lua_SourceInfo info;
   int fnameindex = lua_gettop(L) + 1;  /* index of filename on the stack */
+  info.origin = (filename != NULL) ? LUA_SOURCE_FILE : LUA_SOURCE_NONFILE;
+  info.role = role;
+  info.path = filename;  /* NULL for stdin */
   if (filename == NULL) {
     lua_pushliteral(L, "=stdin");
     lf.f = stdin;
@@ -848,7 +852,7 @@ LUALIB_API int luaL_loadfilex (lua_State *L, const char *filename,
   }
   if (c != EOF)
     lf.buff[lf.n++] = cast_char(c);  /* 'c' is the first character */
-  status = lua_load(L, getF, &lf, lua_tostring(L, -1), mode);
+  status = lua_load_source(L, getF, &lf, lua_tostring(L, -1), mode, &info);
   readstatus = ferror(lf.f);
   errno = 0;  /* no useful error number until here */
   if (filename) fclose(lf.f);  /* close file (even in case of errors) */
@@ -858,6 +862,12 @@ LUALIB_API int luaL_loadfilex (lua_State *L, const char *filename,
   }
   lua_remove(L, fnameindex);
   return status;
+}
+
+
+LUALIB_API int luaL_loadfilex (lua_State *L, const char *filename,
+                                             const char *mode) {
+  return luaL_loadfilex_source(L, filename, mode, LUA_ROLE_DYNAMIC);
 }
 
 
@@ -877,12 +887,24 @@ static const char *getS (lua_State *L, void *ud, size_t *size) {
 }
 
 
-LUALIB_API int luaL_loadbufferx (lua_State *L, const char *buff, size_t size,
-                                 const char *name, const char *mode) {
+LUALIB_API int luaL_loadbufferx_source (lua_State *L, const char *buff,
+                                        size_t size, const char *name,
+                                        const char *mode, int role) {
   LoadS ls;
+  lua_SourceInfo info;
   ls.s = buff;
   ls.size = size;
-  return lua_load(L, getS, &ls, name, mode);
+  info.origin = LUA_SOURCE_NONFILE;
+  info.role = role;
+  info.path = NULL;
+  return lua_load_source(L, getS, &ls, name, mode, &info);
+}
+
+
+LUALIB_API int luaL_loadbufferx (lua_State *L, const char *buff, size_t size,
+                                 const char *name, const char *mode) {
+  return luaL_loadbufferx_source(L, buff, size, name, mode,
+                                 LUA_ROLE_DYNAMIC);
 }
 
 
